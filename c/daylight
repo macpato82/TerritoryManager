@@ -1,0 +1,451 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - AutoDST engine, timezone configuration,
+ * *Configure/*Status keywords and the Service_TimeZoneChanged broadcast.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ *
+ * Port of the original asm TerritoryManager/s/Daylight + s/ModHead pieces that
+ * drive daylight saving:
+ *   - daylight_modify_cmos   read/modify/write of the two DST CMOS bits
+ *   - which_timezone         map the TimeZone CMOS offset to a territory zone
+ *   - daylight_switch_check  decide DST now, set CMOS, book the next switch,
+ *                            and broadcast Service_TimeZoneChanged on change
+ *   - daylight_switchover    the OS_CallAfter callback (via a CMHG generic
+ *                            veneer) that re-runs the check at each transition
+ *   - *Configure/*Status DST | NoDST | AutoDST | TimeZone
+ *   - mod_service            Service_RTCSynchronised / Service_UKConfig
+ *
+ * The DST decision is stored in the standard CMOS bits, so the date/time
+ * conversions in c/datetime (which read the same bits) stay consistent.
+ */
+#include <stdio.h>
+#include <string.h>
+
+#include "swis.h"
+#include "kernel.h"
+#include "territory.h"
+#include "TerritoryHdr.h"   /* generated: daylight_switchover_entry veneer */
+
+/* CMOS locations / bits (Global hdr/CMOS). */
+#define CMOS_AlarmAndTime   0xDC
+#define CMOS_DBTB           0x10
+#define CMOS_TimeZone       0x8B
+#define DSTCMOSBit          0x80   /* AlarmAndTime bit7 -> DST in force */
+#define AutoDSTCMOSBit      0x01   /* DBTB bit0         -> auto switching */
+
+/* DaylightSaving_* state bits (hdr/Territory) used in the service broadcast. */
+#define DST_DSTBit          1
+#define DST_AutoDSTBit      2
+#define DST_ApplyTime       4      /* DaylightSaving_ApplyRuleToTime */
+#define DST_GetBounds       5      /* DaylightSaving_GetBounds       */
+
+/* Service numbers (hdr/Services). */
+#define Service_UKConfig            0x28
+#define Service_RTCSynchronised     0xDD
+#define Service_TimeZoneChanged     0x81080
+
+/* Centisecond scales. */
+#define CS_PER_MIN     6000
+#define CS_PER_HOUR    360000
+#define CS_PER_15MIN   90000
+
+typedef long long t5;          /* 40-bit centiseconds since 1900, signed */
+
+/* Persistent state (module C statics; SCL relocates these for us). */
+static int tzone_index       = -1;
+static int tzone_centis      = 0;
+static int last_tzone_centis = 0;
+static int last_dst_bits     = -1;   /* -1 forces a service call first time */
+static unsigned char dst_start[5];
+static unsigned char dst_stop[5];
+
+/* ------------------------------------------------------------------------- */
+/* CMOS and 5-byte helpers.                                                  */
+/* ------------------------------------------------------------------------- */
+
+static int read_cmos(int addr)
+{
+    _kernel_swi_regs r;
+    r.r[0] = 161;                      /* OsByte_ReadCMOS */
+    r.r[1] = addr;
+    if (_kernel_swi(OS_Byte, &r, &r) != NULL)
+        return 0;
+    return r.r[2] & 0xFF;
+}
+
+static void write_cmos(int addr, int value)
+{
+    _kernel_swi_regs r;
+    r.r[0] = 162;                      /* OsByte_WriteCMOS */
+    r.r[1] = addr;
+    r.r[2] = value & 0xFF;
+    (void)_kernel_swi(OS_Byte, &r, &r);
+}
+
+static t5 rd5(const unsigned char *p)
+{
+    return  (t5)p[0]        | ((t5)p[1] << 8)  | ((t5)p[2] << 16)
+         | ((t5)p[3] << 24) | ((t5)p[4] << 32);
+}
+
+/* Read/modify/write the two DST CMOS bits: new := (old AND and_mask) EOR
+   eor_mask, applied per bit across the two bytes.  Returns the OLD bits as a
+   combined byte (bit7 = old DST, bit0 = old auto).  Faithful to the asm
+   daylight_modify_cmos. */
+static int daylight_modify_cmos(int and_mask, int eor_mask)
+{
+    int dbtb  = read_cmos(CMOS_DBTB);
+    int alarm = read_cmos(CMOS_AlarmAndTime);
+    int newv;
+
+    /* AutoDST bit lives in DBTB bit0. */
+    newv = dbtb;
+    if (!(and_mask & AutoDSTCMOSBit)) newv &= ~AutoDSTCMOSBit;
+    if (eor_mask & AutoDSTCMOSBit)    newv ^=  AutoDSTCMOSBit;
+    if (newv != dbtb) write_cmos(CMOS_DBTB, newv);
+
+    /* DST bit lives in AlarmAndTime bit7. */
+    newv = alarm;
+    if (!(and_mask & DSTCMOSBit)) newv &= ~DSTCMOSBit;
+    if (eor_mask & DSTCMOSBit)    newv ^=  DSTCMOSBit;
+    if (newv != alarm) write_cmos(CMOS_AlarmAndTime, newv);
+
+    return (alarm & DSTCMOSBit) | (dbtb & AutoDSTCMOSBit);
+}
+
+/* Map the configured TimeZone CMOS offset to a zone of the current territory.
+   Sets *index (-1 if no match / custom) and *centis (signed cs offset). */
+static int which_timezone(int *index_out, int *centis_out)
+{
+    const territory_data *t = registry_find(registry_current());
+    int raw    = read_cmos(CMOS_TimeZone);
+    int sgn    = (raw << 24) >> 24;        /* sign-extend the byte */
+    int centis = sgn * CS_PER_15MIN;
+    int idx    = -1, i;
+
+    if (t != NULL && t->timezones != NULL)
+        for (i = 0; i < t->num_timezones; i++)
+            if (t->timezones[i].std_offset_min * CS_PER_MIN == centis)
+            {
+                idx = i;
+                break;
+            }
+
+    if (index_out)  *index_out  = idx;
+    if (centis_out) *centis_out = centis;
+    return idx;
+}
+
+/* ------------------------------------------------------------------------- */
+/* The AutoDST decision + scheduler.                                         */
+/* ------------------------------------------------------------------------- */
+
+/* Read the hardware clock as a UTC 5-byte time. */
+static _kernel_oserror *read_rtc(unsigned char out5[5])
+{
+    unsigned char block[8];
+    _kernel_swi_regs w;
+    _kernel_oserror *e;
+    block[0] = 3;                          /* request 5-byte UTC */
+    w.r[0] = 14;                           /* OsWord_ReadRealTimeClock */
+    w.r[1] = (int)block;
+    e = _kernel_swi(OS_Word, &w, &w);
+    if (e != NULL) return e;
+    memcpy(out5, block, 5);
+    return NULL;
+}
+
+/* Use our own ConvertTimeFormats to turn a UTC 5-byte time into UTC ordinals
+   (NoDST) and return the year, or -1 on error. */
+static int year_of(const unsigned char *utc5)
+{
+    _kernel_swi_regs r;
+    int block[9];
+    /* in = UTC 5byte (3), out = UTC ordinals (2), no DST flags. */
+    r.r[0] = -1;
+    r.r[1] = (int)utc5;
+    r.r[2] = (int)block;
+    r.r[3] = (3 << 0) | (2 << 8);
+    r.r[4] = 0;
+    if (swi_converttimeformats(0, &r, NULL) != NULL)
+        return -1;
+    return block[6];                       /* year ordinal */
+}
+
+/* Centiseconds of 00:00:00 on 1 Jan of 'year', as a UTC 5-byte -> t5. */
+static t5 newyear_instant(int year)
+{
+    _kernel_swi_regs r;
+    int  in[9];
+    unsigned char out5[5];
+    memset(in, 0, sizeof in);
+    in[4] = 1;                             /* day of month  */
+    in[5] = 1;                             /* month         */
+    in[6] = year;                          /* year          */
+    /* in = UTC ordinals (2), out = UTC 5byte (3), no DST. */
+    r.r[0] = -1;
+    r.r[1] = (int)in;
+    r.r[2] = (int)out5;
+    r.r[3] = (2 << 0) | (3 << 8);
+    r.r[4] = 0;
+    if (swi_converttimeformats(0, &r, NULL) != NULL)
+        return 0;
+    return rd5(out5);
+}
+
+/* Ask DaylightSaving for this year's DST bounds for the current zone. */
+static _kernel_oserror *get_bounds(int year)
+{
+    _kernel_swi_regs r;
+    r.r[0] = -1;                           /* current territory */
+    r.r[1] = DST_GetBounds;
+    r.r[2] = tzone_index;                  /* zone within territory */
+    r.r[3] = year;
+    r.r[4] = (int)dst_start;
+    r.r[5] = (int)dst_stop;
+    return swi_daylightsaving(0, &r, NULL);
+}
+
+_kernel_oserror *daylight_switch_check(void *pw)
+{
+    int bits, auto_on;
+    int new_dst;                            /* 0 or DSTCMOSBit to apply */
+    int scheduled = 0;
+    unsigned int delay = 0;
+
+    /* Cancel any pending switch. */
+    _swix(OS_RemoveTickerEvent, _INR(0,1), daylight_switchover_entry, pw);
+
+    /* Read current configuration. */
+    which_timezone(&tzone_index, &tzone_centis);
+
+    bits    = daylight_modify_cmos(DSTCMOSBit | AutoDSTCMOSBit, 0); /* no change */
+    auto_on = (bits & AutoDSTCMOSBit) != 0;
+
+    if (auto_on)
+    {
+        unsigned char now5[5];
+        int year;
+
+        if (read_rtc(now5) == NULL && (year = year_of(now5)) >= 0)
+        {
+            t5 now = rd5(now5);
+
+            if (tzone_index == -1 || get_bounds(year) != NULL)
+            {
+                /* Unknown zone or no rule: force standard time, re-check on
+                   1 Jan next year. */
+                memset(dst_start, 0xFF, 5);
+                memset(dst_stop,  0xFF, 5);
+                new_dst = 0;
+                daylight_modify_cmos(AutoDSTCMOSBit, new_dst);
+                delay     = (unsigned int)(newyear_instant(year + 1) - now);
+                scheduled = 1;
+            }
+            else
+            {
+                t5  start = rd5(dst_start);
+                t5  stop  = rd5(dst_stop);
+                int northern = DSTCMOSBit;
+
+                if (stop < start)           /* southern hemisphere: swap+invert */
+                {
+                    t5 tmp = start; start = stop; stop = tmp;
+                    northern = 0;
+                }
+
+                if (now > stop)
+                {
+                    /* After 'stop' until year end. */
+                    new_dst = northern ^ DSTCMOSBit;   /* DST off (northern) */
+                    daylight_modify_cmos(AutoDSTCMOSBit, new_dst);
+                    delay     = (unsigned int)(newyear_instant(year + 1) - now);
+                    scheduled = 1;
+                }
+                else if (now < start)
+                {
+                    /* Before 'start': not yet in DST. */
+                    new_dst = northern ^ DSTCMOSBit;   /* DST off (northern) */
+                    daylight_modify_cmos(AutoDSTCMOSBit, new_dst);
+                    delay     = (unsigned int)(start - now);
+                    scheduled = 1;
+                }
+                else
+                {
+                    /* Between 'start' and 'stop': DST in force (northern). */
+                    new_dst = northern;                 /* DST on (northern) */
+                    daylight_modify_cmos(AutoDSTCMOSBit, new_dst);
+                    delay     = (unsigned int)(stop - now);
+                    scheduled = 1;
+                }
+            }
+        }
+
+        if (scheduled)
+            _swix(OS_CallAfter, _INR(0,2),
+                  delay, daylight_switchover_entry, pw);
+    }
+
+    /* Did the effective timezone/DST change?  If so tell other modules. */
+    bits = daylight_modify_cmos(DSTCMOSBit | AutoDSTCMOSBit, 0);
+    if (bits != last_dst_bits || tzone_centis != last_tzone_centis)
+    {
+        int r2 = 0;
+        if (bits & DSTCMOSBit)     r2 |= DST_DSTBit;
+        if (bits & AutoDSTCMOSBit) r2 |= DST_AutoDSTBit;
+        last_dst_bits     = bits;
+        last_tzone_centis = tzone_centis;
+        _swix(OS_ServiceCall, _INR(0,3),
+              0, Service_TimeZoneChanged, r2, tzone_centis);
+    }
+    return NULL;
+}
+
+/* The OS_CallAfter callback (reached through the CMHG generic veneer). */
+_kernel_oserror *daylight_switchover(_kernel_swi_regs *r, void *pw)
+{
+    (void)r;
+    return daylight_switch_check(pw);
+}
+
+/* ------------------------------------------------------------------------- */
+/* *Configure / *Status : DST | NoDST | AutoDST                              */
+/* ------------------------------------------------------------------------- */
+
+/* which: 0 = DST, 1 = NoDST, 2 = AutoDST. */
+_kernel_oserror *daylight_configure_dst(int which, void *pw)
+{
+    switch (which)
+    {
+        case 0:  daylight_modify_cmos(0, DSTCMOSBit);            break; /* DST */
+        case 1:  daylight_modify_cmos(0, 0);                     break; /* NoDST */
+        default: daylight_modify_cmos(DSTCMOSBit, AutoDSTCMOSBit); break;/*Auto*/
+    }
+    return daylight_switch_check(pw);
+}
+
+_kernel_oserror *daylight_status_dst(void)
+{
+    int bits = daylight_modify_cmos(DSTCMOSBit | AutoDSTCMOSBit, 0);
+    const char *s = (bits & AutoDSTCMOSBit) ? "AutoDST"
+                  : (bits & DSTCMOSBit)     ? "DST"
+                                            : "NoDST";
+    _kernel_oserror *e = _swix(OS_Write0, _IN(0), s);
+    if (e != NULL) return e;
+    return _swix(OS_NewLine, 0);
+}
+
+/* ------------------------------------------------------------------------- */
+/* *Configure / *Status : TimeZone [+/-]<hours>[:<minutes>]                  */
+/* ------------------------------------------------------------------------- */
+
+_kernel_oserror *daylight_configure_timezone(const char *arg, void *pw)
+{
+    int sign = 1, hours = 0, mins = 0, units;
+
+    while (*arg == ' ') arg++;
+    if (*arg == '+') arg++;
+    else if (*arg == '-') { sign = -1; arg++; }
+
+    while (*arg >= '0' && *arg <= '9') hours = hours * 10 + (*arg++ - '0');
+    if (*arg == ':')
+    {
+        arg++;
+        while (*arg >= '0' && *arg <= '9') mins = mins * 10 + (*arg++ - '0');
+    }
+
+    /* CMOS stores offset in signed 15-minute units. */
+    units = sign * (hours * 4 + (mins + 7) / 15);
+    write_cmos(CMOS_TimeZone, units);
+    return daylight_switch_check(pw);
+}
+
+_kernel_oserror *daylight_status_timezone(void)
+{
+    int raw  = read_cmos(CMOS_TimeZone);
+    int sgn  = (raw << 24) >> 24;          /* sign-extend */
+    int mag  = sgn < 0 ? -sgn : sgn;
+    char buf[32];
+    _kernel_oserror *e;
+    sprintf(buf, "%c%d:%02d", sgn < 0 ? '-' : '+', mag / 4, (mag % 4) * 15);
+    e = _swix(OS_Write0, _IN(0), buf);
+    if (e != NULL) return e;
+    return _swix(OS_NewLine, 0);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Service handling.                                                          */
+/* ------------------------------------------------------------------------- */
+
+/* Caseless compare of a timezone name against a (space/NUL terminated) tail. */
+static int tz_name_matches(const char *name, const char *tail)
+{
+    while (*name)
+    {
+        int a = (unsigned char)*name++;
+        int b = (unsigned char)*tail++;
+        if (b == ' ') b = 0;
+        if ((a ^ b) & ~0x20) return 0;
+        if (b == 0) return 0;
+    }
+    return (*tail == '\0' || *tail == ' ');
+}
+
+/* Service_UKConfig: *Configure <timezone-name> sets the zone + DST. */
+static void svc_ukconfig(_kernel_swi_regs *r, void *pw)
+{
+    const territory_data *t = registry_find(registry_current());
+    const char *tail = (const char *)r->r[0];
+    int i;
+
+    if (tail == NULL || r->r[0] == 0 || t == NULL || t->timezones == NULL)
+        return;                            /* R0 = 0 means "no syntax" */
+
+    for (i = 0; i < t->num_timezones; i++)
+    {
+        const territory_timezone *tz = &t->timezones[i];
+        int want_dst = -1;
+        if (tz->std_name && tz_name_matches(tz->std_name, tail)) want_dst = 0;
+        else if (tz->dst_name && tz_name_matches(tz->dst_name, tail)) want_dst = 1;
+        if (want_dst < 0) continue;
+
+        /* Set DST bit (and clear auto), then the timezone offset CMOS. */
+        daylight_modify_cmos(0, want_dst ? DSTCMOSBit : 0);
+        write_cmos(CMOS_TimeZone, tz->std_offset_min / 15);
+        daylight_switch_check(pw);
+        r->r[1] = 0;                       /* claim the service */
+        return;
+    }
+}
+
+void mod_service(int service_number, _kernel_swi_regs *r, void *pw)
+{
+    switch (service_number)
+    {
+        case Service_RTCSynchronised:
+            (void)daylight_switch_check(pw);
+            break;
+        case Service_UKConfig:
+            svc_ukconfig(r, pw);
+            break;
+        default:
+            break;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Init / final hooks called from c/module.                                  */
+/* ------------------------------------------------------------------------- */
+
+void daylight_init(void *pw)
+{
+    (void)pw;
+    tzone_index       = -1;
+    last_dst_bits     = -1;     /* guarantees an initial service broadcast */
+    last_tzone_centis = 0;
+}
+
+void daylight_final(void *pw)
+{
+    _swix(OS_RemoveTickerEvent, _INR(0,1), daylight_switchover_entry, pw);
+}

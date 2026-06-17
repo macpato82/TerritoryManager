@@ -17,16 +17,23 @@
 _kernel_oserror *mod_init(const char *cmd_tail, int podule_base, void *pw)
 {
     _kernel_oserror *e;
-    (void)cmd_tail; (void)podule_base; (void)pw;
+    (void)cmd_tail; (void)podule_base;
     e = registry_init();
     if (e != NULL)
         return e;
-    return register_builtins();
+    e = register_builtins();
+    if (e != NULL)
+        return e;
+    /* Bring AutoDST/timezone state up to date and schedule the next switch. */
+    daylight_init(pw);
+    (void)daylight_switch_check(pw);
+    return NULL;
 }
 
 _kernel_oserror *mod_final(int fatal, int podule_base, void *pw)
 {
-    (void)fatal; (void)podule_base; (void)pw;
+    (void)fatal; (void)podule_base;
+    daylight_final(pw);
     registry_final();
     return NULL;
 }
@@ -107,13 +114,35 @@ static _kernel_oserror *cmd_territories(void)
     return NULL;
 }
 
+/* cmhg passes these sentinels in arg_string for *Configure/*Status keywords:
+   arg_CONFIGURE_SYNTAX (just "*Configure <kw>" with no value) and arg_STATUS
+   ("*Status <kw>").  Both are declared in the generated header. */
+
 _kernel_oserror *mod_command(const char *arg_string, int argc, int cmd_no, void *pw)
 {
-    (void)pw;
     switch (cmd_no)
     {
         case 0:  return cmd_territory(arg_string, argc);
         case 1:  return cmd_territories();
+
+        case 2:  /* DST  (configure + status) */
+            if (arg_string == arg_CONFIGURE_SYNTAX) return NULL;
+            if (arg_string == arg_STATUS)           return daylight_status_dst();
+            return daylight_configure_dst(0, pw);
+
+        case 3:  /* NoDST  (configure) */
+            if (arg_string == arg_CONFIGURE_SYNTAX) return NULL;
+            return daylight_configure_dst(1, pw);
+
+        case 4:  /* AutoDST  (configure) */
+            if (arg_string == arg_CONFIGURE_SYNTAX) return NULL;
+            return daylight_configure_dst(2, pw);
+
+        case 5:  /* TimeZone  (configure + status) */
+            if (arg_string == arg_CONFIGURE_SYNTAX) return NULL;
+            if (arg_string == arg_STATUS)           return daylight_status_timezone();
+            return daylight_configure_timezone(arg_string, pw);
+
         default: return NULL;
     }
 }

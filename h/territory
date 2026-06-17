@@ -217,6 +217,18 @@ _kernel_oserror *swi_convertordinalstotime(int, _kernel_swi_regs *, void *);
 _kernel_oserror *swi_converttexttostring(int, _kernel_swi_regs *, void *);
 _kernel_oserror *swi_daylightrules(int, _kernel_swi_regs *, void *);
 _kernel_oserror *swi_daylightsaving(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_converttimeformats(int, _kernel_swi_regs *, void *);
+
+/* AutoDST engine / timezone configuration (c/daylight). */
+_kernel_oserror *daylight_switch_check(void *pw);
+_kernel_oserror *daylight_switchover(_kernel_swi_regs *r, void *pw);  /* veneer */
+_kernel_oserror *daylight_configure_dst(int which, void *pw);  /* 0=DST 1=No 2=Auto */
+_kernel_oserror *daylight_status_dst(void);
+_kernel_oserror *daylight_configure_timezone(const char *arg, void *pw);
+_kernel_oserror *daylight_status_timezone(void);
+void             daylight_init(void *pw);
+void             daylight_final(void *pw);
+void             mod_service(int service_number, _kernel_swi_regs *r, void *pw);
 
 /* Register all built-in territories (c/territories). */
 _kernel_oserror *register_builtins(void);

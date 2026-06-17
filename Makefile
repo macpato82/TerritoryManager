@@ -13,9 +13,9 @@ CMHGFILE_SWIPREFIX = Territory
 CINCLUDES          = ${RINC}
 
 # Manager logic objects:
-LOGIC_OBJS = module registry swi dispatch tables datetime collate territories errors property
+LOGIC_OBJS = module registry swi dispatch tables datetime daylight collate territories errors property
 # Of those, the ones that #include the CMHG-generated h.TerritoryHdr:
-HDR_OBJS   = module registry swi dispatch tables datetime collate territories
+HDR_OBJS   = module registry swi dispatch tables datetime daylight collate territories
 
 # Territory data objects (these include only h.territory):
 TERR_OBJS  = uk usa ireland canada1 france germany italy spain portugal \
@@ -35,6 +35,7 @@ o.registry:	c.registry	h.territory	h.TerritoryHdr	C:h.kernel
 o.swi:		c.swi		h.territory	h.TerritoryHdr	C:h.kernel
 o.tables:	c.tables	h.territory	h.TerritoryHdr	C:h.kernel
 o.datetime:	c.datetime	h.territory	h.TerritoryHdr	C:h.kernel	C:h.swis
+o.daylight:	c.daylight	h.territory	h.TerritoryHdr	C:h.kernel	C:h.swis
 o.collate:	c.collate	h.territory	h.TerritoryHdr	C:h.kernel
 o.dispatch:	c.dispatch	h.territory	h.TerritoryHdr	C:h.kernel
 o.errors:	c.errors	C:h.kernel

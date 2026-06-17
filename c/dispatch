@@ -54,6 +54,7 @@ _kernel_oserror *territory_swi(int swi, _kernel_swi_regs *r, void *pw)
         case 53: return swi_converttexttostring(swi, r, pw);
         case 54: return swi_select(swi, r, pw);
         case 55: return swi_daylightsaving(swi, r, pw);
+        case 56: return swi_converttimeformats(swi, r, pw);
         default: return error_BAD_SWI;
     }
 }

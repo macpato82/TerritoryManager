@@ -414,7 +414,7 @@ _kernel_oserror *swi_settime(int swi, _kernel_swi_regs *r, void *pw)
 /*  Out: R0 -> name of current timezone, R1 = signed offset (cs) from UTC,    */
 /*       R2 = timezone index if R2 was the magic word on entry.               */
 /* ========================================================================= */
-#define ReadTimeZones_Extension  0x4B534154    /* "TASK" magic word */
+#define ReadTimeZones_Extension  0x454E4F5A    /* "ZONE" magic word (hdr/Territory) */
 
 _kernel_oserror *swi_readcurrenttimezone(int swi, _kernel_swi_regs *r, void *pw)
 {
@@ -1366,4 +1366,124 @@ _kernel_oserror *swi_daylightsaving(int swi, _kernel_swi_regs *r, void *pw)
     default:
         return Err_BadSubreason;
     }
+}
+
+/* ========================================================================= */
+/* SWI Territory_ConvertTimeFormats  (manager SWI, &43040 + 56).              */
+/*  The central UTC<->local converter (asm s/SWIs ConvertTimeFormats).        */
+/*  In:  R0 = territory (or -1), R1 -> input block, R2 -> output block,       */
+/*       R3 = format + flags, R4 = timezone-within-territory or cs offset.    */
+/*   format: b0-7 = input, b8-15 = output; 0=local ord, 1=local 5byte,        */
+/*           2=UTC ord, 3=UTC 5byte.                                          */
+/*   flags:  b16 DST, b17 use-std-if-no-auto, b18 use-auto-DST,               */
+/*           b19 = R4 is a signed cs offset rather than a timezone index.     */
+/*  Input ordinals need only the 28-byte form; output ordinals are 36-byte.   */
+/* ========================================================================= */
+#define TF_InShift              0
+#define TF_OutShift             8
+#define TF_Flag_DST             (1u<<16)
+#define TF_Flag_UseStdIfNoAuto  (1u<<17)
+#define TF_Flag_UseAutoDST      (1u<<18)
+#define TF_Flag_SpecifyOffset   (1u<<19)
+
+_kernel_oserror *swi_converttimeformats(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t;
+    unsigned flags  = (unsigned)r->r[3];
+    int      infmt  = (int)((flags >> TF_InShift)  & 0xFF);
+    int      outfmt = (int)((flags >> TF_OutShift) & 0xFF);
+    int      in_utc, out_utc, out_ord;
+    t5       time5;
+    ord      o;
+    (void)swi;
+
+    /* Only b0-1 of each format byte are meaningful, and no flags above b19. */
+    if ((flags >> 20) != 0 || (infmt & 0xFC) != 0 || (outfmt & 0xFC) != 0)
+        return Err_BadSubreason;
+
+    in_utc  = (infmt  & 2) != 0;
+    out_utc = (outfmt & 2) != 0;
+    out_ord = (outfmt & 1) == 0;
+
+    /* Read input into a 5-byte time in its own (local or UTC) frame. */
+    if (infmt & 1)
+    {
+        time5 = read5((const unsigned char *)r->r[1]);
+    }
+    else
+    {
+        block_to_ord((const int *)r->r[1], &o);
+        if (compose(&o, &time5) != 0)
+            return Err_BadTimeBlock;
+    }
+
+    /* Localisation is only needed when the input and output frames differ. */
+    if (in_utc != out_utc)
+    {
+        int offset_cs;
+
+        if (flags & TF_Flag_SpecifyOffset)
+        {
+            if (flags & (TF_Flag_UseAutoDST | TF_Flag_UseStdIfNoAuto))
+                return Err_BadSubreason;     /* incompatible with raw offset */
+            offset_cs = r->r[4];
+            if (flags & TF_Flag_DST)
+                offset_cs += TICKS_PER_HOUR; /* assume DST is a fixed +1h */
+        }
+        else
+        {
+            int tz_index = r->r[4];
+            const territory_timezone *tz;
+
+            t = registry_require(r->r[0], &err);
+            if (t == NULL) return err;
+            if (t->timezones == NULL || tz_index < 0 ||
+                tz_index >= t->num_timezones)
+                return Err_NoMoreZones;
+            tz = &t->timezones[tz_index];
+
+            /* Auto DST: let DaylightSaving decide on/off for this instant. */
+            if (flags & TF_Flag_UseAutoDST)
+            {
+                unsigned char tb[5];
+                _kernel_swi_regs dr;
+                write5(tb, time5);
+                dr.r[0] = r->r[0];
+                dr.r[1] = DST_ApplyTime;
+                dr.r[3] = (int)tb;
+                err = swi_daylightsaving(0, &dr, pw);
+                if (err != NULL)
+                {
+                    if (!(flags & TF_Flag_UseStdIfNoAuto))
+                        return err;
+                    dr.r[0] = 0;             /* pretend standard time */
+                }
+                if (dr.r[0] & DST_DSTBit) flags |=  TF_Flag_DST;
+                else                      flags &= ~TF_Flag_DST;
+            }
+
+            offset_cs = ((flags & TF_Flag_DST) ? tz->dst_offset_min
+                                               : tz->std_offset_min)
+                        * TICKS_PER_MINUTE;
+        }
+
+        /* local = UTC + offset.  UTC->local adds, local->UTC subtracts. */
+        if (in_utc && !out_utc)
+            time5 += offset_cs;
+        else
+            time5 -= offset_cs;
+    }
+
+    /* Write output (ordinals are the full 36-byte form). */
+    if (out_ord)
+    {
+        decompose(time5, &o);
+        ord_to_block(&o, (int *)r->r[2]);
+    }
+    else
+    {
+        write5((unsigned char *)r->r[2], time5);
+    }
+    return NULL;
 }

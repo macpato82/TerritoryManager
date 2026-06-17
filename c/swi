@@ -10,6 +10,7 @@
  * TerritoryManager/s/SWIs (SWITerritory_* routines).
  */
 #include <string.h>
+#include "swis.h"
 #include "territory.h"
 #include "TerritoryHdr.h"
 
@@ -149,7 +150,15 @@ _kernel_oserror *swi_nametonumber(int swi, _kernel_swi_regs *r, void *pw)
  */
 _kernel_oserror *swi_select(int swi, _kernel_swi_regs *r, void *pw)
 {
-    (void)swi; (void)pw;
-    return registry_select(r->r[0]);
+    _kernel_oserror *e;
+    (void)swi;
+    e = registry_select(r->r[0]);
+    if (e != NULL)
+        return e;
+    /* A new territory may use different timezones: re-assess DST and announce
+       the change (Service_TerritoryStarted = &75). */
+    (void)daylight_switch_check(pw);
+    (void)_swix(OS_ServiceCall, _INR(0,1), 0, 0x75);
+    return NULL;
 }
 
