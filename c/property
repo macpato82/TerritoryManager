@@ -1,0 +1,292 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - character property tables.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ *
+ * Territory_CharacterPropertyTable returns, for a given character "property",
+ * a 256-byte table with one byte per character code (nonzero => the character
+ * has that property).  The original ARM module exposed eleven such tables for
+ * the Latin1 alphabet:
+ *
+ *   ControlTable, UppercaseTable, LowercaseTable, AlphaTable,
+ *   PunctuationTable, SpaceTable, DigitTable, XDigitTable, AccentedTable,
+ *   ForwardFlowTable, BackwardFlowTable
+ *
+ * Source of the bytes (bit-per-character DCD words, LSB = lowest char):
+ *   TerritoryModule/s/Tables  (Control, Digit, XDigit; macro invocations for
+ *                              Uppercase/Lowercase/Alpha/Punctuation/Space/
+ *                              Accented/ForwardFlow/BackwardFlow)
+ *   TerritoryModule/s/UK      (the DoXxxTable macro definitions for Latin1)
+ *
+ * Each DCD word covers 32 consecutive character codes, bit 0 = lowest code.
+ * These have been expanded here to one C byte per character, preserving the
+ * exact bits from the assembler.
+ *
+ * Property reason codes are taken from TerritoryManager/hdr/Territory
+ * (Property_Control .. Property_BackwardFlow, allocated 0..10 in order).
+ *
+ * Alphabet coverage: only the Latin1 alphabet is transcribed here (it is the
+ * only alphabet for which the asm defined property tables).  property_table()
+ * returns the Latin1 set for ANY requested alphabet as a documented fallback;
+ * callers needing non-Latin1 property data must extend this file.
+ */
+#include <stddef.h>     /* NULL */
+
+static const unsigned char prop_control_latin1[256]={
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+};
+
+static const unsigned char prop_uppercase_latin1[256]={
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+};
+
+static const unsigned char prop_lowercase_latin1[256]={
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,
+    0,0,1,0,0,0,1,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,1,0,0,1,1,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,
+};
+
+static const unsigned char prop_alpha_latin1[256]={
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,
+    0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,
+    0,1,1,0,0,1,1,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,1,1,0,0,1,1,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,
+};
+
+static const unsigned char prop_punctuation_latin1[256]={
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,
+    1,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,0,0,1,1,0,0,
+    0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,
+};
+
+static const unsigned char prop_space_latin1[256]={
+    0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+};
+
+static const unsigned char prop_digit_latin1[256]={
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+};
+
+static const unsigned char prop_xdigit_latin1[256]={
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,
+    0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+};
+
+static const unsigned char prop_accented_latin1[256]={
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,1,1,0,0,1,1,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,
+    0,1,1,1,1,1,1,0,1,1,1,1,1,1,0,0,
+    1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,
+    0,1,1,1,1,1,1,0,1,1,1,1,1,1,0,1,
+};
+
+static const unsigned char prop_forwardflow_latin1[256]={
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+};
+
+static const unsigned char prop_backwardflow_latin1[256]={
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+};
+
+
+/* Property reason codes (TerritoryManager/hdr/Territory, sequential 0..10). */
+#define Property_Control       0
+#define Property_Uppercase     1
+#define Property_Lowercase     2
+#define Property_Alpha         3
+#define Property_Punctuation   4
+#define Property_Space         5
+#define Property_Digit         6
+#define Property_XDigit        7
+#define Property_Accented      8
+#define Property_ForwardFlow   9
+#define Property_BackwardFlow  10
+
+/* Lowest / highest valid property reason code. */
+#define Property_Min  Property_Control
+#define Property_Max  Property_BackwardFlow
+
+/*
+ * property_table - return the 256-byte property table for an alphabet+property.
+ *
+ *   alphabet : alphabet number (e.g. 101 = Latin1).  Currently only Latin1
+ *              data exists; every alphabet maps to the Latin1 tables as a
+ *              documented best-effort fallback.
+ *   property : one of Property_Control .. Property_BackwardFlow.
+ *
+ * Returns a pointer to a static 256-byte table, or NULL if the property reason
+ * code is out of range (caller should then raise Err_UnknownProperty).
+ */
+const unsigned char *property_table(int alphabet, int property)
+{
+    (void)alphabet;   /* only Latin1 data available; used as universal fallback */
+
+    switch (property)
+    {
+        case Property_Control:      return prop_control_latin1;
+        case Property_Uppercase:    return prop_uppercase_latin1;
+        case Property_Lowercase:    return prop_lowercase_latin1;
+        case Property_Alpha:        return prop_alpha_latin1;
+        case Property_Punctuation:  return prop_punctuation_latin1;
+        case Property_Space:        return prop_space_latin1;
+        case Property_Digit:        return prop_digit_latin1;
+        case Property_XDigit:       return prop_xdigit_latin1;
+        case Property_Accented:     return prop_accented_latin1;
+        case Property_ForwardFlow:  return prop_forwardflow_latin1;
+        case Property_BackwardFlow: return prop_backwardflow_latin1;
+        default:                    return NULL;
+    }
+}

@@ -1,0 +1,44 @@
+REM >TestTerr  - smoke test for the C TerritoryManager rewrite
+REM SPDX-License-Identifier: GPL-3.0-or-later
+REM Load the C module first:  *RMKill TerritoryManager : *RMLoad rm.TerritoryManager
+ON ERROR PRINT "*** BASIC error: ";REPORT$;" @ line ";ERL : END
+DIM buf% 256
+
+PRINT "--- *Territories ---"
+OSCLI "Territories"
+
+PRINT '"--- identity SWIs ---"
+SYS "Territory_Number" TO cur%
+PRINT "Territory_Number (current): ";cur%
+
+SYS "Territory_NumberToName", 1, buf%, 256 TO ,,
+PRINT "NumberToName(1): ";$buf%
+
+SYS "Territory_NameToNumber", -1, "USA" TO usa%
+PRINT "NameToNumber(""USA""): ";usa%
+
+SYS "Territory_Exists", 1 TO ,exists%
+PRINT "Exists(1): ";exists%
+
+PRINT '"--- tables / symbols (territory 1 = UK) ---"
+SYS "Territory_UpperCaseTable", 1 TO tab%
+PRINT "UpperCaseTable ptr: &";~tab%;"  ('a'->'";CHR$(tab%?ASC"a");"')"
+
+SYS "Territory_ReadSymbols", 1, 0 TO sym%
+PRINT "ReadSymbols(decimal_point): '";$sym%;"'"
+
+PRINT '"--- calendar ---"
+SYS "Territory_ReadCalendarInformation", 1, , buf%
+PRINT "CalendarInfo first/last workday: ";buf%!0;" ";buf%!4;"  months:";buf%!8
+
+PRINT '"--- date/time (convert a fixed 5-byte time) ---"
+DIM t% 8 : t%!0 = 0 : t%?4 = 0 : REM 1900-01-01 00:00:00
+SYS "Territory_ConvertDateAndTime", 1, t%, buf%, 256, "%24:%MI:%SE %DY-%M3-%CE%YR" TO ,,len%
+PRINT "ConvertDateAndTime: ";$buf%
+
+PRINT '"--- collate ---"
+SYS "Territory_Collate", 1, "apple", "banana", 0 TO cmp%
+PRINT "Collate(apple,banana): ";cmp%;" (expect negative)"
+
+PRINT '"All calls completed."
+END

@@ -1,0 +1,4 @@
+# RISC OS source files MUST keep LF line endings.
+# (The ObjAsm/Norcroft build and CMHG choke on CRLF - e.g. "\<CR>" in a macro
+#  continuation is rejected - so never let autocrlf turn these into CRLF.)
+* text eol=lf

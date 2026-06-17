@@ -1,0 +1,1369 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - date/time, DST and timezone SWIs.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ *
+ * Reimplements the asm date arithmetic from:
+ *   TerritoryManager/s/SWIs      (GetTimeValues, GetOrdinalValues, SetTime,
+ *                                 ReadCurrentTimeZone, ConvertTimeToUTCOrdinals,
+ *                                 DaylightSaving, ConvertTimeFormats, which_timezone)
+ *   TerritoryManager/s/Daylight  (DST CMOS bits)
+ *   TerritoryManager/s/ModHead   (which_timezone)
+ *   TerritoryModule/s/DateTime   (ConvertDateAndTime %-format expansion incl.
+ *                                 %JE/%J1/%JY Japanese eras, ConvertTimeToOrdinals,
+ *                                 ConvertOrdinalsToTime, ConvertTimeStringToOrdinals,
+ *                                 ConvertStandard*, DaylightRules)
+ *
+ * RISC OS time is a 5-byte centiseconds-since-1900-00:00:00 value, little
+ * endian.  All arithmetic here is integer-only (no float, no threading).
+ */
+#include <string.h>
+#include "swis.h"
+#include "kernel.h"
+#include "territory.h"
+#include "TerritoryHdr.h"
+
+/* Forward declarations. */
+_kernel_oserror *swi_daylightrules(int swi, _kernel_swi_regs *r, void *pw);
+_kernel_oserror *swi_daylightsaving(int swi, _kernel_swi_regs *r, void *pw);
+
+/* ---- constants matching the asm ----------------------------------------- */
+#define TICKS_PER_SECOND   100
+#define TICKS_PER_MINUTE   (TICKS_PER_SECOND * 60)
+#define TICKS_PER_HOUR     (TICKS_PER_MINUTE * 60)
+#define TICKS_PER_DAY      (TICKS_PER_HOUR   * 24)
+
+/* DaylightSaving result bits (hdr/Territory: DaylightSaving_DSTBit etc). */
+#define DST_DSTBit      1   /* DaylightSaving_DSTBit     = 1:SHL:0 */
+#define DST_AutoDSTBit  2   /* DaylightSaving_AutoDSTBit = 1:SHL:1 */
+
+/* DaylightSaving subreasons (hdr/Territory). */
+#define DST_ReadState   0   /* DaylightSaving_ReadDSTState        */
+#define DST_WriteState  1   /* DaylightSaving_WriteDSTState       */
+#define DST_Supported   2   /* DaylightSaving_Supported           */
+#define DST_ApplyOrd    3   /* DaylightSaving_ApplyRuleToOrdinals */
+#define DST_ApplyTime   4   /* DaylightSaving_ApplyRuleToTime     */
+#define DST_GetBounds   5   /* DaylightSaving_GetBounds           */
+
+/* ConvertTimeStringToOrdinals reason codes. */
+#define CTS_Time        1   /* time only  */
+#define CTS_Date        2   /* date only  */
+#define CTS_DateTime    3   /* both       */
+
+/* ConvertDateAndTime flag bits (R3) - DateAndTime_Flag_* in hdr/Territory. */
+#define DAT_FlagExtension     (1u<<31)
+#define DAT_FlagUseSpecified  (1u<<30)
+#define DAT_FlagSpecifyTZ     (1u<<29)
+#define DAT_FlagDST           (1u<<28)
+#define DAT_ReservedMask      0x0FFF0000u  /* must be zero in extension mode  */
+
+/* CMOS locations / bits (Global/CMOS hdr). */
+#define CMOS_AlarmAndTime   0xDC   /* AlarmAndTimeCMOS &DC */
+#define CMOS_DBTB           0x10   /* DBTBCMOS         &10 */
+#define CMOS_TimeZone       0x8B   /* TimeZoneCMOS     &8B */
+#define DSTCMOSBit          0x80   /* AlarmAndTime bit7    */
+#define AutoDSTCMOSBit      0x01   /* DBTB bit0            */
+
+/* The "bad subreason" error mirrors ErrorNumber_OutOfRange (&1E6) used by the
+   asm ErrorBlock_UnknownSubreason / ErrorBlock_BadSWI. */
+#define ErrorNumber_BadSubreason  0x1E6
+static const _kernel_oserror datetime_bad_subreason =
+    { ErrorNumber_BadSubreason, "Unknown Territory operation" };
+#define Err_BadSubreason  ((_kernel_oserror *)&datetime_bad_subreason)
+
+/* A fully decomposed ordinal set, mirroring GetTimeValues. */
+typedef struct ord
+{
+    int cs;          /* centiseconds 0..99 */
+    int sec;         /* 0..61 */
+    int min;         /* 0..59 */
+    int hour;        /* 0..23 */
+    int dom;         /* day of month 1..31 */
+    int month;       /* 1..12 */
+    int year;        /* full year e.g. 2026 */
+    int dow;         /* day of week 1=Sun..7=Sat */
+    int doy;         /* day of year 1..366 */
+    int woy;         /* week of year */
+} ord;
+
+/* ------------------------------------------------------------------------- */
+/* 5-byte time <-> 40-bit centisecond integer.                               */
+/* ------------------------------------------------------------------------- */
+
+typedef long long t5;   /* signed 64-bit centiseconds since 1900 */
+
+static t5 read5(const unsigned char *p)
+{
+    return  (t5)p[0]
+         | ((t5)p[1] << 8)
+         | ((t5)p[2] << 16)
+         | ((t5)p[3] << 24)
+         | ((t5)p[4] << 32);
+}
+
+static void write5(unsigned char *p, t5 v)
+{
+    p[0] = (unsigned char)(v        & 0xFF);
+    p[1] = (unsigned char)((v >> 8)  & 0xFF);
+    p[2] = (unsigned char)((v >> 16) & 0xFF);
+    p[3] = (unsigned char)((v >> 24) & 0xFF);
+    p[4] = (unsigned char)((v >> 32) & 0xFF);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Calendar helpers (Gregorian, proleptic from 1900 as the asm assumes).     */
+/* ------------------------------------------------------------------------- */
+
+static int is_leap(int year)
+{
+    if (year % 4 != 0)   return 0;
+    if (year % 100 != 0) return 1;
+    return (year % 400 == 0);
+}
+
+static const unsigned char month_len[13] =
+    { 0, 31,28,31,30,31,30,31,31,30,31,30,31 };
+
+static int days_in_month(int year, int month)
+{
+    if (month == 2 && is_leap(year)) return 29;
+    if (month < 1 || month > 12) return 30;
+    return month_len[month];
+}
+
+/* Days since 1900-01-01 for the given y/m/d (d=1-based). */
+static long days_since_1900(int year, int month, int dom)
+{
+    long days = 0;
+    int y, m;
+    for (y = 1900; y < year; y++)
+        days += is_leap(y) ? 366 : 365;
+    for (m = 1; m < month; m++)
+        days += days_in_month(year, m);
+    days += (dom - 1);
+    return days;
+}
+
+/* day of week for a days-since-1900 count: asm fudges (days+1) MOD 7 then +1,
+   giving 1..7 with 1=Sun (1900-01-01 was a Monday -> value 2). */
+static int dow_of_days(long days)
+{
+    int v = (int)(((days % 7) + 7 + 1) % 7);   /* 0..6 */
+    return v + 1;                               /* 1..7 */
+}
+
+/* Decompose a centisecond count into ordinals.  Mirrors GetTimeValues,
+   including its ISO week-of-year algorithm. */
+static void decompose(t5 centis, ord *o)
+{
+    long days;
+    t5   cs_today;
+    int  year, m, leap;
+
+    if (centis < 0) centis = 0;             /* defensive */
+
+    days     = (long)(centis / TICKS_PER_DAY);
+    cs_today = centis % TICKS_PER_DAY;
+
+    o->hour = (int)(cs_today / TICKS_PER_HOUR);   cs_today %= TICKS_PER_HOUR;
+    o->min  = (int)(cs_today / TICKS_PER_MINUTE); cs_today %= TICKS_PER_MINUTE;
+    o->sec  = (int)(cs_today / TICKS_PER_SECOND); cs_today %= TICKS_PER_SECOND;
+    o->cs   = (int)cs_today;
+
+    o->dow = dow_of_days(days);             /* 1=Sun..7=Sat */
+
+    /* year and day-of-year */
+    year = 1900;
+    for (;;)
+    {
+        int ylen = is_leap(year) ? 366 : 365;
+        if (days < ylen) break;
+        days -= ylen;
+        year++;
+    }
+    o->year = year;
+    o->doy  = (int)days + 1;                 /* 1..366 */
+    leap    = is_leap(year);
+
+    /* month / day of month */
+    {
+        long rem = days;                     /* 0-based day in year */
+        for (m = 1; m <= 12; m++)
+        {
+            int mlen = days_in_month(year, m);
+            if (rem < mlen) break;
+            rem -= mlen;
+        }
+        o->month = m;
+        o->dom   = (int)rem + 1;
+    }
+
+    /* week of year - faithful port of GetTimeValues' ISO computation.
+       R8 here = doy-1 (0-based), R11 = dow (1..7, Sun=1). */
+    {
+        int doy0 = o->doy - 1;               /* 0-based day in year */
+        int dow1 = o->dow;                   /* 1..7, Sun=1 */
+        int t;                               /* asm R7 */
+        int startdow;                        /* remainder = dow of Jan 1 */
+        int wk;
+
+        t = dow1 - 2;                        /* Sun=-1,Mon=0..Sat=5 */
+        if (t < 0) t += 7;                   /* Mon=0..Sun=6 */
+        t = doy0 - t;                        /* doy of start of this week */
+        t = t + 6;
+        wk       = t / 7;                    /* week number 0..53 */
+        startdow = t % 7;                    /* Mon=6,Tue=5..Sun=0 */
+        if (startdow < 0) { startdow += 7; wk--; }   /* C floor for negatives */
+
+        if (startdow >= 3) wk++;             /* year starts Mon..Thu -> wk 1 */
+
+        {
+            int maxwk;
+            if ((startdow == 4 && leap) || startdow == 3)
+                maxwk = 53;                  /* Wed in leap year, or Thu */
+            else
+                maxwk = 52;
+            if (wk > maxwk) wk = 1;          /* spills into next year */
+        }
+
+        if (wk == 0)
+        {
+            /* belongs to the previous year */
+            if (startdow > 1)        wk = 53;            /* Fri */
+            else if (startdow == 0)  wk = 52;            /* Sun */
+            else
+            {
+                /* Saturday 1 Jan: 53 if previous year leap, else 52 */
+                wk = is_leap(year - 1) ? 53 : 52;
+            }
+        }
+        o->woy = wk;
+    }
+}
+
+/* Compose ordinals into a centisecond count.  Mirrors GetOrdinalValues.
+   Returns 0 ok, !=0 if year out of range. */
+static int compose(const ord *o, t5 *out)
+{
+    long days;
+    if (o->year < 1900)
+        return 1;
+    days = days_since_1900(o->year, o->month, o->dom);
+    *out = (t5)days * TICKS_PER_DAY
+         + (t5)o->hour * TICKS_PER_HOUR
+         + (t5)o->min  * TICKS_PER_MINUTE
+         + (t5)o->sec  * TICKS_PER_SECOND
+         + o->cs;
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Ordinals <-> the 36-byte register block layout used by the SWIs.          */
+/*   [+0]=cs [+4]=sec [+8]=min [+12]=hour [+16]=dom [+20]=month [+24]=year    */
+/*   [+28]=dow [+32]=doy   (woy is not in the block; the asm 28-byte input    */
+/*   form only carries cs..year)                                             */
+/* ------------------------------------------------------------------------- */
+
+static void ord_to_block(const ord *o, int *b)
+{
+    b[0] = o->cs;
+    b[1] = o->sec;
+    b[2] = o->min;
+    b[3] = o->hour;
+    b[4] = o->dom;
+    b[5] = o->month;
+    b[6] = o->year;
+    b[7] = o->dow;
+    b[8] = o->doy;
+}
+
+static void block_to_ord(const int *b, ord *o)
+{
+    o->cs    = b[0];
+    o->sec   = b[1];
+    o->min   = b[2];
+    o->hour  = b[3];
+    o->dom   = b[4];
+    o->month = b[5];
+    o->year  = b[6];
+    o->dow   = 0;
+    o->doy   = 0;
+    o->woy   = 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* CMOS access via OS_Byte (ReadCMOS=161, WriteCMOS=162).                     */
+/* ------------------------------------------------------------------------- */
+
+static int read_cmos(int addr)
+{
+    _kernel_swi_regs r;
+    r.r[0] = 161;          /* OsByte_ReadCMOS */
+    r.r[1] = addr;
+    if (_kernel_swi(OS_Byte, &r, &r) != NULL)
+        return 0;
+    return r.r[2] & 0xFF;
+}
+
+static void write_cmos(int addr, int value)
+{
+    _kernel_swi_regs r;
+    r.r[0] = 162;          /* OsByte_WriteCMOS */
+    r.r[1] = addr;
+    r.r[2] = value & 0xFF;
+    (void)_kernel_swi(OS_Byte, &r, &r);
+}
+
+/* The DST CMOS bit (current standard/summer flag) - AlarmAndTimeCMOS bit7. */
+static int dst_active(void)
+{
+    return (read_cmos(CMOS_AlarmAndTime) & DSTCMOSBit) != 0;
+}
+
+/* The auto-DST bit - DBTBCMOS bit0. */
+static int autodst_active(void)
+{
+    return (read_cmos(CMOS_DBTB) & AutoDSTCMOSBit) != 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Timezone selection.  Mirrors which_timezone (ModHead): read the configured */
+/* offset from TimeZoneCMOS (15-minute units, signed), and find the territory */
+/* timezone whose standard offset matches; -1 (custom) if none.              */
+/* ------------------------------------------------------------------------- */
+
+/* Returns the configured offset in centiseconds. */
+static int configured_offset_cs(void)
+{
+    int raw = read_cmos(CMOS_TimeZone);
+    int sgn = (raw << 24) >> 24;            /* sign extend the byte */
+    return sgn * (15 * 60 * TICKS_PER_SECOND);
+}
+
+/* Find the active timezone index for territory t.  Sets *index_out to the
+   index (or -1 if custom/none) and returns the matching timezone or NULL. */
+static const territory_timezone *current_tz(const territory_data *t, int *index_out)
+{
+    int want = configured_offset_cs();
+    int i;
+    if (t->timezones != NULL)
+    {
+        for (i = 0; i < t->num_timezones; i++)
+        {
+            if (t->timezones[i].std_offset_min * TICKS_PER_MINUTE == want)
+            {
+                if (index_out) *index_out = i;
+                return &t->timezones[i];
+            }
+        }
+    }
+    if (index_out) *index_out = -1;
+    return NULL;
+}
+
+/* Offset (centiseconds east of UTC) currently in force, honouring DST bit. */
+static int current_offset_cs(const territory_data *t)
+{
+    int dst = dst_active();
+    int idx;
+    const territory_timezone *tz = current_tz(t, &idx);
+    if (tz == NULL)
+    {
+        /* custom zone: use the raw configured offset, +1h if DST. */
+        int base = configured_offset_cs();
+        return base + (dst ? TICKS_PER_HOUR : 0);
+    }
+    return (dst ? tz->dst_offset_min : tz->std_offset_min) * TICKS_PER_MINUTE;
+}
+
+/* ========================================================================= */
+/* SWI Territory_SetTime  (R0 -> 5 byte UTC time block).                      */
+/* asm SetTime: writes the clock via OS_Word 15 reason 5, then re-checks DST. */
+/* ========================================================================= */
+_kernel_oserror *swi_settime(int swi, _kernel_swi_regs *r, void *pw)
+{
+    const unsigned char *src = (const unsigned char *)r->r[0];
+    unsigned char block[6];
+    _kernel_swi_regs w;
+    _kernel_oserror *err;
+    (void)swi; (void)pw;
+
+    /* OS_Word 15, reason 5: high-accuracy write of 5-byte clock. */
+    block[0] = 5;
+    memcpy(block + 1, src, 5);
+
+    w.r[0] = 15;                       /* OsWord_WriteRealTimeClock */
+    w.r[1] = (int)block;
+    err = _kernel_swi(OS_Word, &w, &w);
+    if (err != NULL) return err;
+
+    /* Re-evaluate auto-DST now the clock has moved (daylight_switch_check). */
+    {
+        _kernel_swi_regs dr;
+        dr.r[0] = -1;
+        dr.r[1] = DST_WriteState;
+        dr.r[2] = (autodst_active() ? DST_AutoDSTBit : 0)
+                | (dst_active()     ? DST_DSTBit     : 0);
+        (void)swi_daylightsaving(0, &dr, pw);
+    }
+    return NULL;
+}
+
+/* ========================================================================= */
+/* SWI Territory_ReadCurrentTimeZone                                          */
+/*  Out: R0 -> name of current timezone, R1 = signed offset (cs) from UTC,    */
+/*       R2 = timezone index if R2 was the magic word on entry.               */
+/* ========================================================================= */
+#define ReadTimeZones_Extension  0x4B534154    /* "TASK" magic word */
+
+_kernel_oserror *swi_readcurrenttimezone(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(-1, &err);
+    int index, dst;
+    const territory_timezone *tz;
+    (void)swi; (void)pw;
+
+    if (t == NULL) return err;
+
+    tz  = current_tz(t, &index);
+    dst = dst_active();
+
+    if (r->r[2] == (int)ReadTimeZones_Extension)
+        r->r[2] = index;
+
+    if (tz == NULL)
+    {
+        r->r[0] = (int)"custom";
+        r->r[1] = configured_offset_cs() + (dst ? TICKS_PER_HOUR : 0);
+    }
+    else
+    {
+        r->r[0] = (int)(dst ? tz->dst_name : tz->std_name);
+        r->r[1] = (dst ? tz->dst_offset_min : tz->std_offset_min) * TICKS_PER_MINUTE;
+    }
+    return NULL;
+}
+
+/* ========================================================================= */
+/* SWI Territory_ReadTimeZones                                                */
+/*  In:  R0 = territory, R1 = timezone index, R4 = (extension magic)          */
+/*  Out: R0 -> std name, R1 -> dst name, R2 = std offset cs, R3 = dst off cs, */
+/*       R4 = nonzero if extended info present (we always return 1).          */
+/* asm Entries/ReadTimeZones: out-of-range index -> ErrorBlock_NoMoreZones.   */
+/* ========================================================================= */
+_kernel_oserror *swi_readtimezones(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(r->r[0], &err);
+    int idx = r->r[1];
+    const territory_timezone *tz;
+    (void)swi; (void)pw;
+
+    if (t == NULL) return err;
+    if (idx < 0 || idx >= t->num_timezones || t->timezones == NULL)
+        return Err_NoMoreZones;
+
+    tz = &t->timezones[idx];
+    r->r[0] = (int)tz->std_name;
+    r->r[1] = (int)tz->dst_name;
+    r->r[2] = tz->std_offset_min * TICKS_PER_MINUTE;
+    r->r[3] = tz->dst_offset_min * TICKS_PER_MINUTE;
+    /* asm Entries/ReadTimeZones: if the extension magic was supplied in R4 it
+       is overwritten with 0 to denote "extension supported"; otherwise R4 is
+       left as the caller's value (non-magic). */
+    if (r->r[4] == (int)ReadTimeZones_Extension)
+        r->r[4] = 0;
+    return NULL;
+}
+
+/* ========================================================================= */
+/* SWI Territory_ConvertTimeToUTCOrdinals                                     */
+/*  In: R1 -> 5 byte UTC time, R2 -> buffer.  Out: ordinals (UTC) in block.   */
+/* ========================================================================= */
+_kernel_oserror *swi_converttimetoutcordinals(int swi, _kernel_swi_regs *r, void *pw)
+{
+    ord o;
+    (void)swi; (void)pw;
+    decompose(read5((const unsigned char *)r->r[1]), &o);
+    ord_to_block(&o, (int *)r->r[2]);
+    return NULL;
+}
+
+/* ========================================================================= */
+/* SWI Territory_ConvertTimeToOrdinals  (local-time variant).                 */
+/* ========================================================================= */
+_kernel_oserror *swi_converttimetoordinals(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(-1, &err);
+    ord o;
+    (void)swi; (void)pw;
+    if (t == NULL) return err;
+    decompose(read5((const unsigned char *)r->r[1]) + current_offset_cs(t), &o);
+    ord_to_block(&o, (int *)r->r[2]);
+    return NULL;
+}
+
+/* ========================================================================= */
+/* SWI Territory_ConvertOrdinalsToTime                                        */
+/*  In: R1 -> 5 byte buffer (out), R2 -> local ordinals.                      */
+/* ========================================================================= */
+_kernel_oserror *swi_convertordinalstotime(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(-1, &err);
+    ord o;
+    t5  centis;
+    (void)swi; (void)pw;
+    if (t == NULL) return err;
+
+    block_to_ord((const int *)r->r[2], &o);
+    if (compose(&o, &centis) != 0)
+        return Err_BadTimeBlock;
+    centis -= current_offset_cs(t);
+    write5((unsigned char *)r->r[1], centis);
+    return NULL;
+}
+
+/* ========================================================================= */
+/* DST rule -> transition instant for a given year.                          */
+/*  A territory_dst_rule encodes start/end as either a fixed dom or an        */
+/*  nth-weekday-of-month (week 1..5, 5=last) plus a local time (minutes after */
+/*  midnight, in local STANDARD time, as DaylightRules interprets it).        */
+/*  We compute the UTC 5-byte instant by composing the local wall time and    */
+/*  subtracting the standard offset of the given timezone.                    */
+/* ========================================================================= */
+
+/* Resolve the day-of-month for a (month,week,dow,dom) spec in 'year'. */
+static int rule_dom(int year, int month, int week, int dow, int dom)
+{
+    int mlen = days_in_month(year, month);
+    int first_dow, first_match, target;
+
+    if (week == 0 || dow == 0)             /* fixed day-of-month */
+        return (dom < 1) ? 1 : (dom > mlen ? mlen : dom);
+
+    /* day of week of the 1st of this month (1=Sun..7=Sat) */
+    first_dow   = dow_of_days(days_since_1900(year, month, 1));
+    /* first occurrence of 'dow' in the month */
+    first_match = 1 + ((dow - first_dow) + 7) % 7;
+
+    if (week >= 5)
+    {
+        /* last occurrence */
+        target = first_match;
+        while (target + 7 <= mlen) target += 7;
+    }
+    else
+    {
+        target = first_match + (week - 1) * 7;
+        if (target > mlen) target -= 7;    /* clamp (e.g. only 4 occurrences) */
+    }
+    return target;
+}
+
+/* Build the UTC 5-byte instant (returned as a t5) for a transition given by
+   (month,week,dow,dom,minute-of-day) in 'year', using std_offset_min. */
+static t5 rule_instant(int year, int month, int week, int dow, int dom,
+                       int minute, int std_offset_min)
+{
+    ord o;
+    t5  local;
+    int day = rule_dom(year, month, week, dow, dom);
+
+    memset(&o, 0, sizeof o);
+    o.year  = year;
+    o.month = month;
+    o.dom   = day;
+    o.hour  = minute / 60;
+    o.min   = minute % 60;
+    /* minute may be 24:00 (1440) for "end of day"; compose handles overflow. */
+    if (compose(&o, &local) != 0)
+        local = 0;
+    return local - (t5)std_offset_min * TICKS_PER_MINUTE;   /* local -> UTC */
+}
+
+/* Locate the DST rule applicable to the current/selected territory+timezone.
+   Returns the rule or NULL.  Also yields the timezone's std offset. */
+static const territory_dst_rule *find_rule(const territory_data *t, int tz_index,
+                                           int *std_offset_min_out)
+{
+    const territory_timezone *tz;
+    if (t->timezones == NULL || t->num_timezones <= 0)
+        return NULL;
+    if (tz_index < 0)
+    {
+        int idx;
+        tz = current_tz(t, &idx);
+        if (tz == NULL && t->num_timezones > 0)
+            tz = &t->timezones[0];       /* fall back to first defined zone */
+    }
+    else
+    {
+        if (tz_index >= t->num_timezones) return NULL;
+        tz = &t->timezones[tz_index];
+    }
+    if (tz == NULL) return NULL;
+    if (std_offset_min_out) *std_offset_min_out = tz->std_offset_min;
+    return tz->dst_rule;
+}
+
+/* ========================================================================= */
+/* %-format expansion shared by ConvertDateAndTime / ConvertStandard*.        */
+/* ========================================================================= */
+
+/* The asm CDATBufferOverflow / CDATBadField errors.  Buffer overflow is a
+   bad-time-block style condition (output won't fit); bad field is a bad time
+   string.  We map them to the documented frozen errors. */
+#define Err_CDATBufferOverflow  Err_BadTimeBlock
+#define Err_CDATBadField        Err_BadTimeString
+
+/* Print exactly 'digits' columns of 'value', suppressing leading zeros down
+   to the last digit.  Returns chars written, or -1 if no room.  Mirrors
+   CDATDecR4. */
+static int emit_number(char *buf, int avail, int value, int digits)
+{
+    char tmp[6];
+    int  n = 0, i, written = 0, started = 0;
+    int  pow = 1;
+    if (digits < 1) digits = 1;
+    if (digits > 5) digits = 5;
+    for (i = 1; i < digits; i++) pow *= 10;
+    if (value < 0) value = 0;
+    for (i = digits; i >= 1; i--)
+    {
+        int d = (value / pow) % 10;
+        if (d != 0 || started || i == 1)
+        {
+            tmp[n++] = (char)('0' + d);
+            started = 1;
+        }
+        pow /= 10;
+    }
+    if (n > avail) return -1;
+    for (i = 0; i < n; i++) buf[written++] = tmp[i];
+    return written;
+}
+
+static int emit_string(char *buf, int avail, const char *s)
+{
+    int n = 0;
+    if (s == NULL) return 0;
+    while (*s)
+    {
+        if (n >= avail) return -1;
+        buf[n++] = *s++;
+    }
+    return n;
+}
+
+static const char *ord_suffix(const territory_calendar *cal, int dom)
+{
+    if (cal->ordinal_suffix != NULL)
+        return cal->ordinal_suffix[dom];
+    switch (dom)
+    {
+        case 1: case 21: case 31: return "st";
+        case 2: case 22:          return "nd";
+        case 3: case 23:          return "rd";
+        default:                  return "th";
+    }
+}
+
+static int up(int c)
+{
+    return (c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c;
+}
+
+/* Locate the Japanese era for ordinals 'o' (GetJapaneseEra port).  eras[] is
+   ordered oldest-first; eras[i].start_year/month/dom mark the era boundary.
+   Returns era index 0.. and sets *era_year (year within era, 1-based), or
+   returns -1 if no era table (then %JE/%J1/%JY are unsupported). */
+static int japanese_era(const territory_calendar *cal, const ord *o, int *era_year)
+{
+    int i;
+    if (cal->eras == NULL || cal->num_eras <= 0)
+        return -1;
+
+    /* Walk forward: stay in era i while the date is before era[i+1]'s start.
+       The asm treats an era change as effective from noon on the change day. */
+    for (i = 0; i + 1 < cal->num_eras; i++)
+    {
+        const territory_era *next = &cal->eras[i + 1];
+        if (o->year <  next->start_year) break;
+        if (o->year >  next->start_year) continue;
+        if (o->month <  next->start_month) break;
+        if (o->month >  next->start_month) continue;
+        if (o->dom   <  next->start_dom) break;
+        if (o->dom   >  next->start_dom) continue;
+        /* same day - new era applies from noon (hour >= 12). */
+        if (o->hour < 12) break;
+    }
+    if (era_year)
+        *era_year = o->year - cal->eras[i].start_year + 1;
+    return i;
+}
+
+/* Expand format string 'fmt' for ordinals 'o' of territory 't' into buf. */
+static _kernel_oserror *expand_format(const territory_data *t, const ord *o,
+                                      const char *tz_name, const char *fmt,
+                                      char *buf, int bufsize,
+                                      char **end, int *freebytes)
+{
+    const territory_calendar *cal = &t->calendar;
+    char *p   = buf;
+    int   rem = bufsize;                 /* bytes left, including terminator */
+    int   c;
+    int   era_index = -2;                /* -2 = not yet computed */
+    int   era_year  = 0;
+
+#define NEED(_n)  do { if (rem < (_n) + 1) return Err_CDATBufferOverflow; } while (0)
+#define ERA() do { if (era_index == -2) era_index = japanese_era(cal, o, &era_year); } while (0)
+
+    while ((c = (unsigned char)*fmt++) != 0)
+    {
+        if (c != '%')
+        {
+            NEED(1);
+            *p++ = (char)c; rem--;
+            continue;
+        }
+
+        c = (unsigned char)*fmt++;
+        if (c == '0') { NEED(1); *p++ = '\0'; rem--; continue; }
+        if (c == '%') { NEED(1); *p++ = '%';  rem--; continue; }
+        if (c == 0)   return Err_CDATBadField;     /* trailing % */
+
+        c = up(c);
+        if (c == 'Z')                       /* %Zxx variant (suppress-leading) */
+            c = up((unsigned char)*fmt++);
+        if (c == 0) return Err_CDATBadField;
+
+        {
+            int c2 = up((unsigned char)*fmt++);
+            int wrote = 0;
+            const char *str = NULL;
+
+            switch ((c << 8) | c2)
+            {
+            case ('C'<<8)|'S': wrote = emit_number(p, rem-1, o->cs, 2);    break;
+            case ('S'<<8)|'E': wrote = emit_number(p, rem-1, o->sec, 2);   break;
+            case ('M'<<8)|'I': wrote = emit_number(p, rem-1, o->min, 2);   break;
+            case ('2'<<8)|'4': wrote = emit_number(p, rem-1, o->hour, 2);  break;
+            case ('1'<<8)|'2':
+            {
+                int h = o->hour % 12; if (h == 0) h = 12;
+                wrote = emit_number(p, rem-1, h, 2);
+                break;
+            }
+            case ('A'<<8)|'M':
+            case ('P'<<8)|'M':
+                str = (o->hour < 12) ? cal->am_string : cal->pm_string;
+                break;
+            case ('W'<<8)|'E':              /* full weekday */
+                str = (cal->day_full && o->dow>=1 && o->dow<=7)
+                        ? cal->day_full[o->dow-1] : NULL;
+                break;
+            case ('W'<<8)|'3':              /* short weekday */
+                str = (cal->day_short && o->dow>=1 && o->dow<=7)
+                        ? cal->day_short[o->dow-1] : NULL;
+                break;
+            case ('W'<<8)|'N': wrote = emit_number(p, rem-1, o->dow, 1);   break;
+            case ('D'<<8)|'Y': wrote = emit_number(p, rem-1, o->dom, 2);   break;
+            case ('S'<<8)|'T':
+                str = ord_suffix(cal, o->dom);
+                break;
+            case ('M'<<8)|'O':              /* full month */
+                str = (cal->month_full && o->month>=1 && o->month<=cal->num_months)
+                        ? cal->month_full[o->month-1] : NULL;
+                break;
+            case ('M'<<8)|'3':              /* short month */
+                str = (cal->month_short && o->month>=1 && o->month<=cal->num_months)
+                        ? cal->month_short[o->month-1] : NULL;
+                break;
+            case ('M'<<8)|'N': wrote = emit_number(p, rem-1, o->month, 1); break;
+            case ('C'<<8)|'E': wrote = emit_number(p, rem-1, o->year/100, 2); break;
+            case ('Y'<<8)|'R': wrote = emit_number(p, rem-1, o->year%100, 2); break;
+            case ('W'<<8)|'K': wrote = emit_number(p, rem-1, o->woy, 2);   break;
+            case ('D'<<8)|'N': wrote = emit_number(p, rem-1, o->doy, 3);   break;
+            case ('T'<<8)|'Z': str = (tz_name != NULL) ? tz_name : "";     break;
+
+            /* ---- Japanese eras (TerritoryModule JapaneseEras) ---- */
+            case ('J'<<8)|'E':              /* full era name (kanji) */
+                ERA();
+                if (era_index < 0) return Err_CDATBadField;
+                str = cal->eras[era_index].name;
+                break;
+            case ('J'<<8)|'1':              /* abbreviated era name */
+                ERA();
+                if (era_index < 0) return Err_CDATBadField;
+                str = cal->eras[era_index].abbrev;
+                break;
+            case ('J'<<8)|'Y':              /* year within era (3 cols) */
+                ERA();
+                if (era_index < 0) return Err_CDATBadField;
+                wrote = emit_number(p, rem-1, era_year, 3);
+                break;
+
+            default:
+                return Err_CDATBadField;    /* unknown field */
+            }
+
+            if (str != NULL)
+                wrote = emit_string(p, rem-1, str);
+            if (wrote < 0)
+                return Err_CDATBufferOverflow;
+            p   += wrote;
+            rem -= wrote;
+        }
+    }
+#undef NEED
+#undef ERA
+
+    if (rem < 1) return Err_CDATBufferOverflow;
+    *p = '\0';
+    if (end)       *end = p;
+    if (freebytes) *freebytes = rem - 1;
+    return NULL;
+}
+
+/* Resolve which offset/name a ConvertDateAndTime call should use, honouring
+   R3 flag bits.  Returns offset in cs and sets *name.  Returns an error via
+   *err on bad flag combinations (matching CDATBadField). */
+static int dat_offset(const territory_data *t, unsigned flags,
+                      int r5, const char **name, _kernel_oserror **err)
+{
+    *err = NULL;
+    if (flags & DAT_FlagExtension)
+    {
+        if (flags & DAT_FlagUseSpecified)
+        {
+            if (flags & DAT_FlagSpecifyTZ)
+            {
+                int idx = r5;
+                if (t->timezones && idx >= 0 && idx < t->num_timezones)
+                {
+                    const territory_timezone *tz = &t->timezones[idx];
+                    int dst = (flags & DAT_FlagDST) != 0;
+                    *name = dst ? tz->dst_name : tz->std_name;
+                    return (dst ? tz->dst_offset_min : tz->std_offset_min)
+                           * TICKS_PER_MINUTE;
+                }
+                *err = Err_NoMoreZones;
+                *name = "";
+                return 0;
+            }
+            /* R5 is a raw centisecond offset; DST flag is meaningless here. */
+            if (flags & DAT_FlagDST) { *err = Err_CDATBadField; }
+            *name = "";
+            return r5;
+        }
+    }
+    /* default / old API: current timezone via ReadCurrentTimeZone. */
+    {
+        int idx, dst = dst_active();
+        const territory_timezone *tz = current_tz(t, &idx);
+        if (tz == NULL)
+        {
+            *name = "custom";
+            return configured_offset_cs() + (dst ? TICKS_PER_HOUR : 0);
+        }
+        *name = dst ? tz->dst_name : tz->std_name;
+        return (dst ? tz->dst_offset_min : tz->std_offset_min) * TICKS_PER_MINUTE;
+    }
+}
+
+/* ========================================================================= */
+/* SWI Territory_ConvertDateAndTime                                           */
+/*  In:  R1 -> 5 byte UTC time, R2 -> buffer, R3 = size(+flags),              */
+/*       R4 -> format string, R5 = tz/offset per flags.                       */
+/*  Out: R0 = buffer, R1 -> terminator, R2 unchanged? -> per asm R0=buf,      */
+/*       R1=terminator, R3 adjusted; (asm preserves R2 implicitly).           */
+/* ========================================================================= */
+static _kernel_oserror *do_convert(_kernel_swi_regs *r, const char *fmt)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(-1, &err);
+    unsigned flags = (unsigned)r->r[3];
+    int   bufsize;
+    const char *tzname;
+    int offset;
+    ord o;
+    char *endp; int freeb;
+
+    if (t == NULL) return err;
+    if (fmt == NULL) return Err_BadTimeString;
+
+    if (flags & DAT_FlagExtension)
+    {
+        if (flags & DAT_ReservedMask)      /* reserved bits must be zero */
+            return Err_CDATBadField;
+        bufsize = (int)(flags & 0xFFFF);
+    }
+    else
+    {
+        bufsize = r->r[3] & 0xFFFF;
+    }
+
+    offset = dat_offset(t, flags, r->r[5], &tzname, &err);
+    if (err != NULL) return err;
+    decompose(read5((const unsigned char *)r->r[1]) + offset, &o);
+
+    err = expand_format(t, &o, tzname, fmt, (char *)r->r[2], bufsize,
+                        &endp, &freeb);
+    if (err != NULL) return err;
+
+    r->r[0] = r->r[2];
+    r->r[1] = (int)endp;
+    if (flags & DAT_FlagExtension)
+        r->r[3] = (int)(flags & ~DAT_FlagExtension);
+    else
+        r->r[3] = r->r[4];                 /* old API quirk: R3 := input R4 */
+    return NULL;
+}
+
+_kernel_oserror *swi_convertdateandtime(int swi, _kernel_swi_regs *r, void *pw)
+{
+    (void)swi; (void)pw;
+    return do_convert(r, (const char *)r->r[4]);
+}
+
+/* ConvertStandard* use the territory's stored default format strings. */
+_kernel_oserror *swi_convertstandarddateandtime(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(-1, &err);
+    (void)swi; (void)pw;
+    if (t == NULL) return err;
+    return do_convert(r, t->datetime_format);
+}
+
+_kernel_oserror *swi_convertstandarddate(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(-1, &err);
+    (void)swi; (void)pw;
+    if (t == NULL) return err;
+    return do_convert(r, t->date_format);
+}
+
+_kernel_oserror *swi_convertstandardtime(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(-1, &err);
+    (void)swi; (void)pw;
+    if (t == NULL) return err;
+    return do_convert(r, t->time_format);
+}
+
+/* ========================================================================= */
+/* SWI Territory_ConvertTextToString  (manager SWI, &43040 + 53).             */
+/*  This is the inverse of ConvertDateAndTime: it parses ordinals from a      */
+/*  block and a format, producing a string.  In practice the asm form drives  */
+/*  the same %-expansion engine but takes its ordinals from a 36-byte block   */
+/*  pointed to by R1 (already decomposed) rather than a 5-byte time, so no     */
+/*  timezone conversion is performed.                                         */
+/*  In:  R1 -> ordinal block, R2 -> buffer, R3 = size(+flags),                */
+/*       R4 -> format string.                                                 */
+/*  Out: R0 = buffer, R1 -> terminator, R3 adjusted.                          */
+/* ========================================================================= */
+_kernel_oserror *swi_converttexttostring(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(-1, &err);
+    unsigned flags = (unsigned)r->r[3];
+    const char *fmt = (const char *)r->r[4];
+    const int *blk = (const int *)r->r[1];
+    int bufsize;
+    ord o;
+    char *endp; int freeb;
+    (void)swi; (void)pw;
+
+    if (t == NULL) return err;
+    if (fmt == NULL) return Err_BadTimeString;
+
+    if (flags & DAT_FlagExtension)
+    {
+        if (flags & DAT_ReservedMask) return Err_BadTimeString;
+        bufsize = (int)(flags & 0xFFFF);
+    }
+    else
+    {
+        bufsize = r->r[3] & 0xFFFF;
+    }
+
+    /* Take the ordinals straight from the supplied block. */
+    o.cs    = blk[0];
+    o.sec   = blk[1];
+    o.min   = blk[2];
+    o.hour  = blk[3];
+    o.dom   = blk[4];
+    o.month = blk[5];
+    o.year  = blk[6];
+    o.dow   = blk[7];
+    o.doy   = blk[8];
+    o.woy   = 0;
+    /* Derive dow/doy/woy if not provided (block may be a 28-byte form). */
+    if (o.dow < 1 || o.dow > 7 || o.doy < 1)
+    {
+        ord d;
+        t5  c;
+        if (compose(&o, &c) == 0)
+        {
+            decompose(c, &d);
+            o.dow = d.dow; o.doy = d.doy; o.woy = d.woy;
+        }
+    }
+
+    err = expand_format(t, &o, "", fmt, (char *)r->r[2], bufsize, &endp, &freeb);
+    if (err != NULL) return err;
+
+    r->r[0] = r->r[2];
+    r->r[1] = (int)endp;
+    if (flags & DAT_FlagExtension)
+        r->r[3] = (int)(flags & ~DAT_FlagExtension);
+    else
+        r->r[3] = r->r[4];
+    return NULL;
+}
+
+/* ========================================================================= */
+/* SWI Territory_ConvertTimeStringToOrdinals                                  */
+/*  In: R1 = reason, R2 -> string, R3 -> ordinal buffer.                      */
+/*  Parses fixed forms; missing fields set to -1.  Mirrors the asm.           */
+/* ========================================================================= */
+
+static const char *skip_spaces(const char *s) { while (*s==' ') s++; return s; }
+
+static int read_int(const char **s, int maxval)
+{
+    const char *p = *s;
+    int v = 0, any = 0;
+    while (*p >= '0' && *p <= '9') { v = v*10 + (*p - '0'); p++; any = 1; }
+    if (!any || v > maxval) return -1;
+    *s = p;
+    return v;
+}
+
+_kernel_oserror *swi_converttimestringtoordinals(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(-1, &err);
+    const territory_calendar *cal;
+    int   reason = r->r[1];
+    const char *s = (const char *)r->r[2];
+    int  *b = (int *)r->r[3];
+    (void)swi; (void)pw;
+
+    if (t == NULL) return err;
+    cal = &t->calendar;
+
+    s = skip_spaces(s);
+
+    /* date part */
+    if (reason & CTS_Date)
+    {
+        int dom, mon = -1, year, i, ndigits;
+        const char *ys;
+        /* optional "Www, " day-of-week prefix: skip up to and incl first ',' */
+        if (!(*s >= '0' && *s <= '9'))
+        {
+            while (*s && *s != ',') s++;
+            if (*s == ',') s++;
+            s = skip_spaces(s);
+        }
+        dom = read_int(&s, 31);
+        if (dom <= 0) return Err_BadTimeString;
+        s = skip_spaces(s);
+        if (*s == '-') { s++; s = skip_spaces(s); }
+
+        /* match month name (case-insensitive prefix) against short names */
+        if (cal->month_short)
+        {
+            for (i = 0; i < cal->num_months; i++)
+            {
+                const char *mn = cal->month_short[i];
+                const char *ss = s;
+                int ok = (mn != NULL);
+                while (ok && *mn)
+                {
+                    int a = (unsigned char)*mn, c = (unsigned char)*ss;
+                    if (a>='A'&&a<='Z') a += 32;
+                    if (c>='A'&&c<='Z') c += 32;
+                    if (a != c) ok = 0;
+                    mn++; ss++;
+                }
+                if (ok) { mon = i + 1; break; }
+            }
+        }
+        if (mon < 0) return Err_BadTimeString;
+        /* skip rest of alpha month, then separator */
+        while (*s && *s != ' ' && *s != '-') s++;
+        if (*s) s++;
+        s = skip_spaces(s);
+
+        ys = s;
+        year = read_int(&s, 0x7FFFFFFF);
+        if (year < 0) return Err_BadTimeString;
+        ndigits = (int)(s - ys);
+        if (ndigits < 3)
+        {
+            /* 2-digit year: pivot on 26-Jan-66 (asm rule). */
+            year += 2000;
+            if (year > 2000 + 66 ||
+                (year == 2066 && (mon > 1 || (mon == 1 && dom >= 26))))
+                year -= 100;
+        }
+
+        b[4] = dom;
+        b[5] = mon;
+        b[6] = year;
+        if (*s == '.') { s++; }
+        s = skip_spaces(s);
+    }
+    else
+    {
+        b[4] = b[5] = b[6] = -1;
+    }
+
+    /* time part */
+    if (reason & CTS_Time)
+    {
+        int hh, mm, ss2;
+        b[0] = 0;                     /* centiseconds */
+        hh = read_int(&s, 24); if (hh < 0) return Err_BadTimeString;
+        s = skip_spaces(s); if (*s == ':') { s++; s = skip_spaces(s); }
+        mm = read_int(&s, 59); if (mm < 0) return Err_BadTimeString;
+        s = skip_spaces(s); if (*s == ':') { s++; s = skip_spaces(s); }
+        ss2 = read_int(&s, 61); if (ss2 < 0) return Err_BadTimeString;
+        b[3] = hh; b[2] = mm; b[1] = ss2;
+    }
+    else
+    {
+        b[0] = b[1] = b[2] = b[3] = -1;
+    }
+    return NULL;
+}
+
+/* ========================================================================= */
+/* SWI Territory_DaylightRules  (private; R1=0 supported, R1=1 get bounds).   */
+/*  R1=0: V=0,R0=1 supported; (asm uses V to say "no" - here R0=1 always as   */
+/*        we can always evaluate a rule when one is present).                 */
+/*  R1=1: R2 = timezone within territory, R3 = year, R4 -> start 5-byte,      */
+/*        R5 -> end 5-byte.  V=0 rule matched; error (Err_NoRuleDefined) if   */
+/*        no rule for this territory/zone.                                    */
+/* ========================================================================= */
+_kernel_oserror *swi_daylightrules(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t;
+    (void)swi; (void)pw;
+
+    if (r->r[1] > 1)
+        return Err_BadSubreason;
+
+    if (r->r[1] == 0)
+    {
+        /* "Supported": yes if we have any timezone with a DST rule. */
+        int std, i, supported = 0;
+        t = registry_require(-1, &err);
+        if (t == NULL) return err;
+        if (t->timezones)
+            for (i = 0; i < t->num_timezones; i++)
+                if (t->timezones[i].dst_rule != NULL) { supported = 1; break; }
+        (void)std;
+        r->r[0] = supported;
+        return NULL;
+    }
+
+    /* Get bounds for a year. */
+    {
+        int tz_index = r->r[2];
+        int year     = r->r[3];
+        int std_off  = 0;
+        const territory_dst_rule *rule;
+
+        t = registry_require(-1, &err);
+        if (t == NULL) return err;
+
+        rule = find_rule(t, tz_index, &std_off);
+        if (rule == NULL)
+            return Err_NoRuleDefined;
+
+        {
+            t5 start = rule_instant(year, rule->start_month, rule->start_week,
+                                    rule->start_dow, rule->start_dom,
+                                    rule->start_time, std_off);
+            t5 stop  = rule_instant(year, rule->end_month, rule->end_week,
+                                    rule->end_dow, rule->end_dom,
+                                    rule->end_time, std_off);
+            write5((unsigned char *)r->r[4], start);
+            write5((unsigned char *)r->r[5], stop);
+        }
+        return NULL;
+    }
+}
+
+/* ========================================================================= */
+/* SWI Territory_DaylightSaving  (R0=territory, R1=subreason).                */
+/* ========================================================================= */
+
+/* Read the configured DST CMOS bits into DaylightSaving_* form. */
+static int dst_read_state(void)
+{
+    int out = 0;
+    if (dst_active())     out |= DST_DSTBit;
+    if (autodst_active()) out |= DST_AutoDSTBit;
+    return out;
+}
+
+/* Write the DST CMOS bits from DaylightSaving_* form, mirroring the asm:
+   when auto is enabled the explicit DST bit is preserved (auto manages it). */
+static void dst_write_state(int want)
+{
+    int alarm = read_cmos(CMOS_AlarmAndTime);
+    int dbtb  = read_cmos(CMOS_DBTB);
+
+    if (want & DST_AutoDSTBit)
+        dbtb |= AutoDSTCMOSBit;
+    else
+    {
+        dbtb &= ~AutoDSTCMOSBit;
+        /* not auto: set/clear the manual DST bit explicitly */
+        if (want & DST_DSTBit) alarm |=  DSTCMOSBit;
+        else                   alarm &= ~DSTCMOSBit;
+        write_cmos(CMOS_AlarmAndTime, alarm);
+    }
+    write_cmos(CMOS_DBTB, dbtb);
+}
+
+/* Given the start/stop UTC instants and a query instant, decide whether DST
+   is in force, handling both hemispheres.  Returns DST_DSTBit or 0. */
+static int dst_in_window(t5 start, t5 stop, t5 query)
+{
+    int hemi = 0;                          /* hemisphere adjustment */
+    if (stop < start)
+    {
+        /* southern hemisphere: swap so start<stop, invert sense */
+        t5 tmp = start; start = stop; stop = tmp;
+        hemi = DST_DSTBit;
+    }
+    {
+        int in = (query >= start && query <= stop) ? DST_DSTBit : 0;
+        return in ^ hemi;
+    }
+}
+
+_kernel_oserror *swi_daylightsaving(int swi, _kernel_swi_regs *r, void *pw)
+{
+    int reason = r->r[1];
+    (void)swi;
+
+    switch (reason)
+    {
+    case DST_ReadState:
+        r->r[0] = dst_read_state();
+        return NULL;
+
+    case DST_WriteState:
+        dst_write_state(r->r[2]);
+        return NULL;
+
+    case DST_Supported:
+    {
+        _kernel_swi_regs rr = *r;
+        _kernel_oserror *e;
+        rr.r[1] = 0;                       /* DaylightRules: supported? */
+        e = swi_daylightrules(swi, &rr, pw);
+        if (e != NULL) { r->r[0] = 0; return NULL; }   /* asm: V->R0=0 */
+        r->r[0] = rr.r[0];
+        return NULL;
+    }
+
+    case DST_ApplyOrd:
+    case DST_ApplyTime:
+    {
+        /* Build the query UTC instant and the year from R3's block. */
+        t5  query;
+        int year;
+        ord o;
+        const unsigned char *blk = (const unsigned char *)r->r[3];
+
+        if (reason == DST_ApplyOrd)
+        {
+            block_to_ord((const int *)r->r[3], &o);
+            if (compose(&o, &query) != 0)
+                return Err_BadTimeBlock;
+            year = o.year;
+        }
+        else
+        {
+            query = read5(blk);
+            decompose(query, &o);
+            year = o.year;
+        }
+
+        /* Get this year's bounds via DaylightRules. */
+        {
+            _kernel_swi_regs rr;
+            unsigned char startb[5], stopb[5];
+            _kernel_oserror *e;
+            rr.r[0] = r->r[0];
+            rr.r[1] = 1;                    /* get bounds */
+            rr.r[2] = -1;                   /* current timezone */
+            rr.r[3] = year;
+            rr.r[4] = (int)startb;
+            rr.r[5] = (int)stopb;
+            e = swi_daylightrules(swi, &rr, pw);
+            if (e != NULL)
+            {
+                r->r[0] = 0;               /* no rule -> standard time */
+                return NULL;
+            }
+            r->r[0] = dst_in_window(read5(startb), read5(stopb), query);
+        }
+        return NULL;
+    }
+
+    case DST_GetBounds:
+    {
+        /* R0=territory, R2=timezone, R3=year(-1=this year), R4/R5 -> blocks. */
+        int year = r->r[3];
+        _kernel_swi_regs rr;
+        _kernel_oserror *e;
+
+        if (year == -1)
+        {
+            /* "this year": read the RTC and decompose.  OS_Word 14 reason 3
+               returns the 5-byte UTC integer starting at byte 0 of the block
+               (overwriting the reason byte). */
+            unsigned char block[8];
+            _kernel_swi_regs w;
+            ord o;
+            block[0] = 3;                   /* request 5-byte UTC */
+            block[1] = block[2] = block[3] = block[4] = 0;
+            w.r[0] = 14;                    /* OsWord_ReadRealTimeClock */
+            w.r[1] = (int)block;
+            e = _kernel_swi(OS_Word, &w, &w);
+            if (e != NULL) return e;
+            decompose(read5(block), &o);
+            year = o.year;
+        }
+
+        rr.r[0] = r->r[0];
+        rr.r[1] = 1;                        /* get bounds */
+        rr.r[2] = r->r[2];                  /* timezone within territory */
+        rr.r[3] = year;
+        rr.r[4] = r->r[4];
+        rr.r[5] = r->r[5];
+        e = swi_daylightrules(swi, &rr, pw);
+        if (e != NULL)
+            return Err_NoRuleDefined;       /* asm remaps to NoRuleDefined */
+        return NULL;
+    }
+
+    default:
+        return Err_BadSubreason;
+    }
+}

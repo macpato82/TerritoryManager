@@ -1,0 +1,20 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - error blocks.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ *
+ * Numbers match ErrorBase_TerritoryManager (&190) and the order in
+ * TerritoryManager/hdr/Territory, so the ABI error numbers are preserved.
+ * (The standard Acorn cmhg has no error-identifiers directive, so the blocks
+ * are defined here in C and exposed via macros in h/territory.)
+ */
+#include "kernel.h"
+
+const _kernel_oserror territory_err_badterritory = { 0x190, "Territory not known" };
+const _kernel_oserror territory_err_unknownalpha = { 0x191, "Alphabet not known" };
+const _kernel_oserror territory_err_noterritory  = { 0x192, "No territory selected" };
+const _kernel_oserror territory_err_unknownprop  = { 0x193, "Unknown character property" };
+const _kernel_oserror territory_err_badtimestr   = { 0x194, "Bad time string" };
+const _kernel_oserror territory_err_badtimeblock = { 0x195, "Bad time block" };
+const _kernel_oserror territory_err_nomorezones  = { 0x196, "No more time zones" };
+const _kernel_oserror territory_err_norule       = { 0x197, "No daylight saving rule defined" };

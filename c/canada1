@@ -1,0 +1,269 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - Canada1 (French Canadian) territory data.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ *
+ * Transcribed from the ObjAsm sources:
+ *   s/Canada1    (calendar, symbols, 6 timezones, formats, Latin9 case/collate
+ *                 tables)
+ *   s/Entries    (SymbolTable layout)
+ *   Resources/Canada1/Messages (French month/day/suffix names, territory name)
+ *
+ * Territory number 17, alphabet Latin9 (112).
+ *
+ * NOTE: Canada1 sets CollateAccentsBackwards (French accents sorted from the
+ * end of the word).  That collation refinement is a Manager behaviour driven
+ * by this being a French territory; only the weight table is data and is
+ * transcribed here as .collate.
+ */
+
+#include "territory.h"
+
+/* ToLowerTable (s/Canada1, Latin9) */
+static const unsigned char ca_lower_case[256] =
+{
+      0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
+     16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    ' ','!', 34,'#','$','%','&','\'','(',')','*','+',',','-','.','/',
+    '0','1','2','3','4','5','6','7','8','9',':',';','<','=','>','?',
+    '@','a','b','c','d','e','f','g','h','i','j','k','l','m','n','o',
+    'p','q','r','s','t','u','v','w','x','y','z','[','\\',']','^','_',
+    '`','a','b','c','d','e','f','g','h','i','j','k','l','m','n','o',
+    'p','q','r','s','t','u','v','w','x','y','z','{','|','}','~',127,
+    128,0x82,0x82,131,132,0x86,0x86,135,136,137,138,139,0x8C,0x8D,0x8E,0x8F,
+    0x90,0x91,0x92,0x93,0x94,0x95,0x96,0x97,0x98,0x99,154,155,0x9C,0x9D,0x9E,0x9F,
+    0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,0xA6,0xA7,0xA8,0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,
+    0xB0,0xB1,0xB2,0xB3,0xB4,0xB5,0xB6,0xB7,0xB8,0xB9,0xBA,0xBB,0xBC,0xBD,0xBE,0xBF,
+    0xE0,0xE1,0xE2,0xE3,0xE4,0xE5,0xE6,0xE7,0xE8,0xE9,0xEA,0xEB,0xEC,0xED,0xEE,0xEF,
+    0xF0,0xF1,0xF2,0xF3,0xF4,0xF5,0xF6,0xD7,0xF8,0xF9,0xFA,0xFB,0xFC,0xFD,0xFE,0xDF,
+    0xE0,0xE1,0xE2,0xE3,0xE4,0xE5,0xE6,0xE7,0xE8,0xE9,0xEA,0xEB,0xEC,0xED,0xEE,0xEF,
+    0xF0,0xF1,0xF2,0xF3,0xF4,0xF5,0xF6,0xF7,0xF8,0xF9,0xFA,0xFB,0xFC,0xFD,0xFE,0xFF
+};
+
+/* ToUpperTable (s/Canada1, Latin9) */
+static const unsigned char ca_upper_case[256] =
+{
+      0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
+     16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    ' ','!', 34,'#','$','%','&','\'','(',')','*','+',',','-','.','/',
+    '0','1','2','3','4','5','6','7','8','9',':',';','<','=','>','?',
+    '@','A','B','C','D','E','F','G','H','I','J','K','L','M','N','O',
+    'P','Q','R','S','T','U','V','W','X','Y','Z','[','\\',']','^','_',
+    '`','A','B','C','D','E','F','G','H','I','J','K','L','M','N','O',
+    'P','Q','R','S','T','U','V','W','X','Y','Z','{','|','}','~',127,
+    128,0x81,'W',131,132,0x85,'Y',135,136,137,138,139,0x8C,0x8D,0x8E,0x8F,
+    0x90,0x91,0x92,0x93,0x94,0x95,0x96,0x97,0x98,0x99,154,155,0x9C,0x9D,0x9E,0x9F,
+    0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,0xA6,0xA7,0xA8,0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,
+    0xB0,0xB1,0xB2,0xB3,0xB4,0xB5,0xB6,0xB7,0xB8,0xB9,0xBA,0xBB,0xBC,0xBD,0xBE,0xBF,
+    0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF,
+    0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,0xD8,0xD9,0xDA,0xDB,0xDC,0xDD,0xDE,0xDF,
+    0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF,
+    0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,0xD8,0xD9,0xDA,0xDB,0xDC,0xDD,0xDE,0xDF
+};
+
+/* ToControlTable (s/Canada1, Latin9 / Canadian keyboard layout) */
+static const unsigned char ca_control[256] =
+{
+      0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
+     16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    ' ','!',  3,  3,'$','%',  1,  4, 27, 29,'*','+',',',  6,'.','/',
+      0,  1,  2,  3,  4, 27,  6,  7, 31, 30,':',';','<','=','>','?',
+    '@',  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
+     16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,'[', 28,']','^', 31,
+    '`',  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
+     16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,'{','|','}','~',127,
+    128, 23, 23,131,132, 25, 25,135,136,137,138,139,0x8C,0x8D,0x8E,0x8F,
+    0x90,0x91,0x92,0x93,0x94,0x95,0x96,0x97,0x98,0x99,154,155,0x9C,0x9D,0x9E,0x9F,
+    0xA0,0xA1,0xA2,0xA3,0xA4,0xA5, 19,0xA7, 19,0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,
+     29,0xB1,0xB2,0xB3, 26,0xB5,0xB6,0xB7, 26,0xB9,0xBA,0xBB,0xBC,0xBD, 25,0xBF,
+      1,  1,  1,  1,  1,  1,0xC6,  3,  5,  5,  5,  5,  9,  9,  9,  9,
+    0xD0, 14, 15, 15, 15, 15, 15,0xD7,0xD8, 21, 21, 21, 21, 25,0xDE,0xDF,
+      0,  1,  1,  1,  1,  1,0xE6, 30,  7,  2,  5,  5,  9,  9,  9,  9,
+    0xF0, 14, 15, 15, 15, 15, 15,0xF7,0xF8,0xF9, 21, 21, 21, 25,0xFE, 25
+};
+
+/* ToPlainTable / ToPlainForCollateTable (s/Canada1, Latin9) */
+static const unsigned char ca_plain[256] =
+{
+      0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
+     16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    ' ','!', 34,'#','$','%','&','\'','(',')','*','+',',','-','.','/',
+    '0','1','2','3','4','5','6','7','8','9',':',';','<','=','>','?',
+    '@','A','B','C','D','E','F','G','H','I','J','K','L','M','N','O',
+    'P','Q','R','S','T','U','V','W','X','Y','Z','[','\\',']','^','_',
+    '`','a','b','c','d','e','f','g','h','i','j','k','l','m','n','o',
+    'p','q','r','s','t','u','v','w','x','y','z','{','|','}','~',127,
+    128,'W','w',131,132,'Y','y',135,136,137,138,139,0x8C,0x8D,0x8E,0x8F,
+    0x90,0x91,0x92,0x93,0x94,0x95,0x96,0x97,0x98,0x99,154,155,0x9C,0x9D,0x9E,0x9F,
+    0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,'S',0xA7,'s',0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,
+    0xB0,0xB1,0xB2,0xB3,'Z',0xB5,0xB6,0xB7,'z',0xB9,0xBA,0xBB,0xBC,0xBD,'Y',0xBF,
+    'A','A','A','A','A','A',0xC6,'C','E','E','E','E','I','I','I','I',
+    0xD0,'N','O','O','O','O','O',0xD7,'O','U','U','U','U','Y',0xDE,0xDF,
+    'a','a','a','a','a','a',0xE6,'c','e','e','e','e','i','i','i','i',
+    0xF0,'n','o','o','o','o','o',0xF7,'o','u','u','u','u','y',0xFE,'y'
+};
+
+static const unsigned char ca_value[256] =
+{
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  0,  0,  0,  0,  0,  0,
+      0, 10, 11, 12, 13, 14, 15,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0, 10, 11, 12, 13, 14, 15,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+};
+
+static const unsigned char ca_representation[16] =
+{
+    '0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'
+};
+
+/* SortValueTable (s/Canada1, Latin9 collation weights) */
+static const unsigned char ca_collate[256] =
+{
+    0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
+    0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1A,0x1B,0x1C,0x1D,0x1E,0x1F,
+    0x20,0x22,0x23,0x24,0x25,0x26,0x27,0x28,0x29,0x2A,0x2B,0x2C,0x2D,0x2E,0x30,0x31,
+    0x32,0x33,0x34,0x35,0x36,0x37,0x38,0x39,0x3A,0x3B,0x3C,0x3D,0x3E,0x3F,0x40,0x41,
+    0x42,0x43,0x53,0x55,0x59,0x5D,0x67,0x6B,0x6D,0x6F,0x79,0x7B,0x7D,0x7F,0x81,0x85,
+    0x95,0x97,0x99,0x9B,0xA0,0xA2,0xAC,0xAE,0xB2,0xB4,0xBC,0xC2,0xC3,0xC4,0xC5,0xC6,
+    0xC7,0x44,0x54,0x56,0x5A,0x5E,0x68,0x6C,0x6E,0x70,0x7A,0x7C,0x7E,0x80,0x82,0x86,
+    0x96,0x98,0x9A,0x9C,0xA1,0xA3,0xAD,0xAF,0xB3,0xB5,0xBD,0xC8,0xC9,0xCA,0xCB,0xCC,
+    0xCD,0xB0,0xB1,0xCE,0xCF,0xB8,0xB9,0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,0xD8,
+    0xD9,0xDA,0xDB,0xDC,0xDD,0xDE,0xDF,0xE0,0xE1,0xE2,0xE3,0xE4,0xE5,0xE6,0x69,0x6A,
+    0x21,0xE7,0xE8,0xE9,0xEA,0xEB,0x9D,0xEC,0x9E,0xED,0xEE,0xEF,0xF0,0x2F,0xF1,0xF2,
+    0xF3,0xF4,0xF6,0xF7,0xBE,0xF8,0xF9,0xFA,0xBF,0xF5,0xFB,0xFC,0x93,0x94,0xBA,0xFD,
+    0x47,0x45,0x49,0x4F,0x4D,0x4B,0x51,0x57,0x61,0x5F,0x63,0x65,0x73,0x71,0x75,0x77,
+    0x5B,0x83,0x89,0x87,0x8B,0x8F,0x8D,0xFE,0x91,0xA6,0xA4,0xA8,0xAA,0xB6,0xC0,0x9F,
+    0x48,0x46,0x4A,0x50,0x4E,0x4C,0x52,0x58,0x62,0x60,0x64,0x66,0x74,0x72,0x76,0x78,
+    0x5C,0x84,0x8A,0x88,0x8C,0x90,0x8E,0xFF,0x92,0xA7,0xA5,0xA9,0xAB,0xB7,0xC1,0xBB
+};
+
+/* ----------------------------------------------------------------------
+ * Calendar name tables (Resources/Canada1/Messages, French - Latin1/Latin9
+ * high bytes; e.g. \xE9 = e-acute, \xFB = u-circumflex, \xE0 = a-grave).
+ * ---------------------------------------------------------------------- */
+
+static const char *const ca_month_full[12] =
+{
+    "Janvier","F\xE9vrier","Mars","Avril","Mai","Juin",
+    "Juillet","Ao\xFBt","Septembre","Octobre","Novembre","D\xE9""cembre"
+};
+static const char *const ca_month_short[12] =
+{
+    "Jan","F\xE9v","Mar","Avr","Mai","Jun","Jui","Ao\xFB","Sep","Oct","Nov","D\xE9""c"
+};
+/* index 0 = Sunday */
+static const char *const ca_day_full[7] =
+{
+    "Dimanche","Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi"
+};
+static const char *const ca_day_short[7] =
+{
+    "Dim","Lun","Mar","Mer","Jeu","Ven","Sam"
+};
+/* French ordinals: st="er" (1er), nd/rd/th="e" (messages: st:er nd/rd/th:e).
+   Slots are [0]=default(th->"e"), [1]=st->"er", [2]=nd->"e", [3]=rd->"e". */
+static const char *const ca_ordinal_suffix[4] = { "e","er","e","e" };
+
+/* Timezones (s/Canada1 tz_table: 6 Canadian zones, French names).
+   Offsets minutes east of UTC.  Zone 0 (Newfoundland) is -3:30 / -2:30. */
+/* Canadian DST: 2nd Sun Mar 02:00 local-std -> 1st Sun Nov 02:00 local-std
+   (same rule as USA; Canada harmonised with US in 2007). */
+static const territory_dst_rule ca_dst =
+{ 3, 2, 1, 0, 120,  11, 1, 1, 0, 120 };
+
+static const territory_timezone ca_timezones[6] =
+{
+    { -(3*60+30), -(2*60+30), "HNT", "HAT", &ca_dst }, /* Terre-Neuve */
+    { -4*60,      -3*60,      "HNA", "HAA", &ca_dst }, /* Atlantique */
+    { -5*60,      -4*60,      "HNE", "HAE", &ca_dst }, /* Est */
+    { -6*60,      -5*60,      "HNC", "HAC", &ca_dst }, /* Centre */
+    { -7*60,      -6*60,      "HNR", "HAR", &ca_dst }, /* Rocheuses */
+    { -8*60,      -7*60,      "HNP", "HAP", &ca_dst }  /* Pacifique */
+};
+
+const territory_data territory_canada1 =
+{
+    .number          = 17,
+    .name            = "Canada1",
+
+    .default_alphabet = 112,            /* ISOAlphabet_Latin9 */
+    .alphabet_name    = "Latin9",
+    .keyboard         = 17,             /* OS_Byte alphabet 128+TerrNum */
+    .write_direction  = 0,
+    .ime_chunk       = 0,
+
+    .lower_case      = ca_lower_case,
+    .upper_case      = ca_upper_case,
+    .control         = ca_control,
+    .plain           = ca_plain,
+    .value           = ca_value,
+    .representation  = ca_representation,
+    .property        = NULL,
+    .collate         = ca_collate,
+
+    .symbols =
+    {
+        .decimal_point     = ",",
+        .thousands_sep     = "\xA0",    /* non-breaking space */
+        .grouping          = "\3\0",
+        .int_curr_symbol   = "CAD ",
+        .currency_symbol   = "$",
+        .mon_decimal_point = ",",
+        .mon_thousands_sep = "\xA0",    /* non-breaking space */
+        .mon_grouping      = "\3\0",
+        .positive_sign     = "",
+        .negative_sign     = "",
+        .int_frac_digits   = 2,
+        .frac_digits       = 2,
+        .p_cs_precedes     = 0,
+        .p_sep_by_space    = 1,
+        .n_cs_precedes     = 0,
+        .n_sep_by_space    = 1,
+        .p_sign_posn       = 1,
+        .n_sign_posn       = 0,
+        .list_symbol       = ";"
+    },
+
+    .calendar =
+    {
+        .first_work_day    = 2,
+        .last_work_day     = 6,
+        .num_months        = 12,
+        .max_ampm_len      = 2,
+        .max_fullday_len   = 8,         /* "Mercredi" */
+        .max_shortday_len  = 3,
+        .max_day_len       = 2,
+        .max_suffix_len    = 2,         /* "er" */
+        .max_fullmonth_len = 9,         /* "Septembre" */
+        .max_shortmonth_len= 3,
+        .max_tz_len        = 3,         /* "HNC" */
+        .month_full        = ca_month_full,
+        .month_short       = ca_month_short,
+        .day_full          = ca_day_full,
+        .day_short         = ca_day_short,
+        .am_string         = "am",
+        .pm_string         = "pm",
+        .ordinal_suffix    = ca_ordinal_suffix,
+        .eras              = NULL,
+        .num_eras          = 0
+    },
+
+    .timezones       = ca_timezones,
+    .num_timezones   = 6,
+
+    .date_format     = "%ce%yr-%mn-%dy",
+    .time_format     = "%24:%mi:%se",
+    .datetime_format = "%ce%yr-%mn-%dy %24:%mi:%se %tz"
+};

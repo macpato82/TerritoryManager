@@ -1,0 +1,554 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - alphabet / table / symbol / calendar SWIs.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ *
+ * Each handler decodes registers into typed values, resolves the territory
+ * via registry_require(r->r[0], &err), reads the relevant territory_data
+ * field, and writes the result back into the register block.
+ *
+ * Register conventions reproduced from:
+ *   TerritoryManager/s/SWIs     (Manager-side SWI veneers)
+ *   TerritoryModule/s/Entries   (per-territory entry-point semantics)
+ *   TerritoryModule/s/Transform (Territory_TransformString)
+ *
+ * In the original ABI most of these SWIs (Alphabet, AlphabetIdentifier,
+ * SelectKeyboardHandler, WriteDirection, *Table, ReadSymbols,
+ * ReadCalendarInformation, TransformString, IME) were dispatched straight
+ * through the Manager's CallTerritory to the territory's own entry routine,
+ * which returned the value in registers.  In this all-C rewrite the Manager
+ * holds the territory as pure data, so we read the field directly.
+ */
+#include <string.h>
+#include "kernel.h"
+#include "territory.h"
+#include "TerritoryHdr.h"
+
+/* ------------------------------------------------------------------------
+ * Territory_ReadSymbols reason codes (asm SymbolTable order, see Entries).
+ * ------------------------------------------------------------------------ */
+#define Symbol_DecimalPoint       0
+#define Symbol_ThousandsSep       1
+#define Symbol_Grouping           2
+#define Symbol_IntCurrSymbol      3
+#define Symbol_CurrencySymbol     4
+#define Symbol_MonDecimalPoint    5
+#define Symbol_MonThousandsSep    6
+#define Symbol_MonGrouping        7
+#define Symbol_PositiveSign       8
+#define Symbol_NegativeSign       9
+#define Symbol_IntFracDigits      10
+#define Symbol_FracDigits         11
+#define Symbol_PCsPrecedes        12
+#define Symbol_PSepBySpace        13
+#define Symbol_NCsPrecedes        14
+#define Symbol_NSepBySpace        15
+#define Symbol_PSignPosn          16
+#define Symbol_NSignPosn          17
+#define Symbol_ListSymbol         18
+
+/* property_table() lives in c/property; it returns the 256-byte table for a
+ * given alphabet + property reason code, or NULL if the reason is unknown. */
+extern const unsigned char *property_table(int alphabet, int property);
+
+/* Property reason codes for CharacterPropertyTable (hdr/Territory). */
+#define Property_Control       0
+#define Property_Uppercase     1
+#define Property_Lowercase     2
+#define Property_Alpha         3
+#define Property_Punctuation   4
+#define Property_Space         5
+#define Property_Digit         6
+#define Property_XDigit        7
+#define Property_Accented      8
+#define Property_ForwardFlow   9
+#define Property_BackwardFlow  10
+
+/* OS_Byte 71 - select/read alphabet & keyboard (asm OsByte_Alphabet). */
+#define OsByte_Alphabet  71
+
+/* SWI number for OS_Byte (in case the toolchain headers do not define it). */
+#ifndef OS_Byte
+#define OS_Byte  0x06
+#endif
+
+/* The asm SWI decoder answered an out-of-range SWI reason code with the
+ * standard "bad SWI" error (Territory_SWIdecode -> ErrorNumber_OutOfRange,
+ * &1E6).  c/swi keeps its own file-static copy; we mirror it here for the
+ * few table SWIs that validate a sub-reason code. */
+#ifndef ErrorNumber_BadSWI
+#define ErrorNumber_BadSWI  0x1E6
+#endif
+static const _kernel_oserror tables_error_BAD_SWI =
+    { ErrorNumber_BadSWI, "Unknown Territory operation" };
+
+/* ------------------------------------------------------------------------
+ * Territory_Alphabet  (chunk +18)
+ *   Entry: R0 = territory number or -1.
+ *   Exit:  R0 = default alphabet number for that territory.
+ * (asm Entries: "Alphabet" -> MOV r0,#AlphNum)
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_alphabet(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    r->r[0] = t->default_alphabet;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_AlphabetIdentifier  (chunk +19)
+ *   Entry: R0 = territory number or -1.
+ *   Exit:  R0 -> 0-terminated alphabet identifier string.
+ * (asm Entries: "AlphabetIdent" -> ADR r0,Alphabet_IdentString; the asm
+ *  returns a pointer, it does NOT copy into a caller buffer.)
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_alphabetidentifier(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    r->r[0] = (int)t->alphabet_name;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_AlphabetNumberToName  (chunk +5)
+ *   Entry: R0 = alphabet number, R1 -> buffer, R2 = buffer length.
+ *   Exit:  [R1] = name of the alphabet ("Alphabet<n>"-style token lookup).
+ *
+ * NOTE: this SWI is keyed on an ALPHABET number, not a territory number, and
+ * the asm resolved it via a messages-file token ("A<number>").  The frozen
+ * contract has no alphabet-name registry, so we synthesise a stable
+ * "Alphabet<n>" string as a best effort.
+ * TODO-verify: original produced messages-file token "A<n>"; confirm desired
+ * text and whether a real alphabet-name table belongs in the contract.
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_alphabetnumbertoname(int swi, _kernel_swi_regs *r, void *pw)
+{
+    int   alphabet = r->r[0];
+    char *buf      = (char *)r->r[1];
+    int   size     = r->r[2];
+    char  tmp[32];
+    int   n, i;
+
+    /* Build "Alphabet<n>" without using any float / library locale. */
+    {
+        static const char prefix[] = "Alphabet";
+        int p = 0;
+        while (prefix[p] != '\0' && p < (int)sizeof(tmp) - 12)
+        {
+            tmp[p] = prefix[p];
+            p++;
+        }
+        n = alphabet;
+        if (n < 0)
+        {
+            tmp[p++] = '-';
+            n = -n;
+        }
+        {
+            char rev[12];
+            int  k = 0;
+            do { rev[k++] = (char)('0' + (n % 10)); n /= 10; } while (n != 0);
+            while (k > 0)
+                tmp[p++] = rev[--k];
+        }
+        tmp[p] = '\0';
+    }
+
+    i = 0;
+    if (buf != NULL && size > 0)
+    {
+        while (i < size - 1 && tmp[i] != '\0')
+        {
+            buf[i] = tmp[i];
+            i++;
+        }
+        buf[i] = '\0';
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_SelectAlphabet  (chunk +6)
+ *   Entry: R0 = territory number or -1.
+ *   Exit:  registers preserved; the territory's default alphabet is selected.
+ * (asm SWITerritory_SelectAlphabet: reads the alphabet via Territory_Alphabet,
+ *  then OS_Byte 71,128+alphabet to make it current, then Service_International
+ *  Inter_Define to (re)define the character range.  Here we issue the OS_Byte;
+ *  the service call is left for the module's service layer.)
+ * TODO-verify: original also issued Service_International Inter_Define for
+ * chars 0..255 after selecting; wire that in when the service layer lands.
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_selectalphabet(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    _kernel_swi_regs      ob;
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    ob.r[0] = OsByte_Alphabet;
+    ob.r[1] = 128 + t->default_alphabet;   /* >=128 => select that alphabet */
+    ob.r[2] = 0;
+    return _kernel_swi(OS_Byte, &ob, &ob);
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_SelectKeyboardHandler  (chunk +20)
+ *   Entry: R0 = territory number or -1.
+ *   Exit:  registers preserved; keyboard handler for the territory selected.
+ * (asm Entries: "SelectKeyboardHandler" -> OS_Byte 71,128+TerrNum.  The asm
+ *  used the *territory* number as the keyboard id; the contract carries an
+ *  explicit keyboard field, which we use.)
+ * TODO-verify: asm passed 128+TerrNum (territory number) to OS_Byte 71; we
+ * pass 128+keyboard.  Confirm the keyboard field carries the right value.
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_selectkeyboardhandler(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    _kernel_swi_regs      ob;
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    ob.r[0] = OsByte_Alphabet;
+    ob.r[1] = 128 + t->keyboard;
+    ob.r[2] = 0;
+    return _kernel_swi(OS_Byte, &ob, &ob);
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_WriteDirection  (chunk +21)
+ *   Entry: R0 = territory number or -1.
+ *   Exit:  R0 = write-direction flags.
+ * (asm Entries: "WriteDirection" -> MOV r0,#WriteDir)
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_writedirection(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    r->r[0] = t->write_direction;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_CharacterPropertyTable  (chunk +22)
+ *   Entry: R0 = territory number or -1, R1 = property reason code (0..10).
+ *   Exit:  R0 -> 256-byte table for that property (1 byte per char: nonzero
+ *          if the char has the property).
+ *
+ * The asm Entries (CharacterPropertyTable) selected one of eleven distinct
+ * tables by the R1 reason code (ControlTable, UppercaseTable, ...,
+ * BackwardFlowTable) and returned its address in R0, or raised
+ * TerritoryError_UnknownProperty for any other reason.  We reproduce that
+ * exactly via property_table(), keyed on the territory's default alphabet.
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_charpropertytable(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    int                   prop = r->r[1];
+    const unsigned char  *table;
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    table = property_table(t->default_alphabet, prop);
+    if (table == NULL)
+        return Err_UnknownProperty;   /* asm: TerritoryError_UnknownProperty */
+
+    r->r[0] = (int)table;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_LowerCaseTable  (chunk +23)
+ *   Entry: R0 = territory number or -1.
+ *   Exit:  R0 -> 256-byte to-lower-case mapping table.
+ * (asm Entries: "GetLowerCaseTable" -> ADRL r0,ToLowerTable)
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_lowercasetable(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    r->r[0] = (int)t->lower_case;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_UpperCaseTable  (chunk +24)
+ *   Entry: R0 = territory number or -1.   Exit: R0 -> to-upper-case table.
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_uppercasetable(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    r->r[0] = (int)t->upper_case;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_ControlTable  (chunk +25)
+ *   Entry: R0 = territory number or -1.   Exit: R0 -> control mapping table.
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_controltable(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    r->r[0] = (int)t->control;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_PlainTable  (chunk +26)
+ *   Entry: R0 = territory number or -1.   Exit: R0 -> "plain" (strip accents)
+ *   mapping table.
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_plaintable(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    r->r[0] = (int)t->plain;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_ValueTable  (chunk +27)
+ *   Entry: R0 = territory number or -1.   Exit: R0 -> value mapping table.
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_valuetable(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    r->r[0] = (int)t->value;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_RepresentationTable  (chunk +28)
+ *   Entry: R0 = territory number or -1.   Exit: R0 -> representation table.
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_representationtable(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    r->r[0] = (int)t->representation;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_ReadSymbols  (chunk +30)
+ *   Entry: R0 = territory number or -1, R1 = reason code (0..18).
+ *   Exit:  R0 = requested value: a POINTER for the string/grouping reasons
+ *          (0..9, 18) or an INTEGER for the numeric reasons (10..17).
+ * (asm Entries: "ReadSymbols" indexes SymbolTable by R1; entries <20 are
+ *  numeric, >=20 are offsets that become pointers.)
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_readsymbols(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror         *err = NULL;
+    const territory_data    *t   = registry_require(r->r[0], &err);
+    int                      reason = r->r[1];
+    const territory_symbols *s;
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    s = &t->symbols;
+    switch (reason)
+    {
+        case Symbol_DecimalPoint:    r->r[0] = (int)s->decimal_point;     break;
+        case Symbol_ThousandsSep:    r->r[0] = (int)s->thousands_sep;     break;
+        case Symbol_Grouping:        r->r[0] = (int)s->grouping;          break;
+        case Symbol_IntCurrSymbol:   r->r[0] = (int)s->int_curr_symbol;   break;
+        case Symbol_CurrencySymbol:  r->r[0] = (int)s->currency_symbol;   break;
+        case Symbol_MonDecimalPoint: r->r[0] = (int)s->mon_decimal_point; break;
+        case Symbol_MonThousandsSep: r->r[0] = (int)s->mon_thousands_sep; break;
+        case Symbol_MonGrouping:     r->r[0] = (int)s->mon_grouping;      break;
+        case Symbol_PositiveSign:    r->r[0] = (int)s->positive_sign;     break;
+        case Symbol_NegativeSign:    r->r[0] = (int)s->negative_sign;     break;
+        case Symbol_IntFracDigits:   r->r[0] = s->int_frac_digits;        break;
+        case Symbol_FracDigits:      r->r[0] = s->frac_digits;            break;
+        case Symbol_PCsPrecedes:     r->r[0] = s->p_cs_precedes;          break;
+        case Symbol_PSepBySpace:     r->r[0] = s->p_sep_by_space;         break;
+        case Symbol_NCsPrecedes:     r->r[0] = s->n_cs_precedes;          break;
+        case Symbol_NSepBySpace:     r->r[0] = s->n_sep_by_space;         break;
+        case Symbol_PSignPosn:       r->r[0] = s->p_sign_posn;            break;
+        case Symbol_NSignPosn:       r->r[0] = s->n_sign_posn;            break;
+        case Symbol_ListSymbol:      r->r[0] = (int)s->list_symbol;       break;
+        default:
+            /* asm had no bounds check (out-of-range reads were UB); we reject
+             * an unknown reason code with the standard bad-SWI error. */
+            return (_kernel_oserror *)&tables_error_BAD_SWI;
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_ReadCalendarInformation  (chunk +31)
+ *   Entry: R0 = territory number or -1,
+ *          R1 -> 5-byte UTC time value,
+ *          R2 -> 12-word output buffer.
+ *   Exit:  R1,R2 preserved; buffer filled:
+ *          [R2+0]  first working day      [R2+24] max W3 (short day) length
+ *          [R2+4]  last working day       [R2+28] max DY (day-of-month) length
+ *          [R2+8]  number of months       [R2+32] max ST (suffix) length
+ *          [R2+12] days in current month   [R2+36] max MO (full month) length
+ *          [R2+16] max AM/PM length        [R2+40] max M3 (short month) length
+ *          [R2+20] max WE (full day) length[R2+44] max TZ length
+ *
+ * (asm GetCalendarInformation: copies the 11 fixed CalendarInfo words into
+ *  slots 0,1,2 then 4..11, then computes [R2+12] = days-in-current-month from
+ *  the UTC time in R1.  That month-length computation needs date decoding the
+ *  contract doesn't yet provide here, so it is left as TODO-verify.)
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_readcalendarinformation(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror          *err = NULL;
+    const territory_data     *t   = registry_require(r->r[0], &err);
+    int                      *buf = (int *)r->r[2];
+    const territory_calendar *c;
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+    if (buf == NULL)
+        return Err_BadTerritory;   /* TODO-verify: asm assumed a valid buffer */
+
+    c = &t->calendar;
+    buf[0]  = c->first_work_day;
+    buf[1]  = c->last_work_day;
+    buf[2]  = c->num_months;
+    /* buf[3] = days in current month - depends on R1 (the UTC time). */
+    buf[4]  = c->max_ampm_len;
+    buf[5]  = c->max_fullday_len;
+    buf[6]  = c->max_shortday_len;
+    buf[7]  = c->max_day_len;
+    buf[8]  = c->max_suffix_len;
+    buf[9]  = c->max_fullmonth_len;
+    buf[10] = c->max_shortmonth_len;
+    buf[11] = c->max_tz_len;
+
+    /* TODO-verify: compute buf[3] = number of days in the month containing the
+     * UTC time at r->r[1], honouring leap years (asm used MonthLengths + the
+     * 4/100/400 rule).  Requires a date-decode helper not yet wired into the
+     * C rewrite; defaulting to a safe upper bound for now. */
+    buf[3]  = 31;
+
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_TransformString  (chunk +33)
+ *   Entry: R0 = territory number or -1,
+ *          R1 = destination buffer,
+ *          R2 = source string (0-terminated),
+ *          R3 = destination buffer length.
+ *   Exit:  R0 = length of the transformed string (excluding terminator).
+ *          If that length >= R3-on-entry the buffer contents are
+ *          indeterminate.  If R3 == 0, R1 may be NULL.
+ *
+ * (asm Transform: produces a collation key such that a byte-wise comparison of
+ *  two transformed strings orders them as Territory_Collate would.  The asm
+ *  uses SortValueTable / ToLowerTable / ToPlainForCollateTable plus ligature
+ *  rules.  The contract exposes `collate` (a weight table) but not the
+ *  lower/plain-for-collate tables nor the per-territory ligature flags, so a
+ *  faithful key cannot be built generically yet.)
+ *
+ * Best-effort: build a single-pass key using the collate weight table when
+ * present (weight per byte), else a case/accent-folded key via lower_case and
+ * plain.  This preserves "equal/ordering" for the common Latin1 case but is
+ * NOT the exact asm multi-pass key.
+ * TODO-verify: reproduce the asm's 3x-length escaped key (letters, then
+ * accents, then case) and ligature expansion.  Needs SortValueTable,
+ * ToLowerTable and ToPlainForCollateTable plus the Collate* flags in the
+ * contract (see "missing fields").
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_transformstring(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    char                 *dst = (char *)r->r[1];
+    const unsigned char  *src = (const unsigned char *)r->r[2];
+    int                   dstlen = r->r[3];
+    const unsigned char  *weight;
+    const unsigned char  *lower;
+    const unsigned char  *plain;
+    int                   out = 0;
+    int                   i;
+
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    weight = t->collate;
+    lower  = t->lower_case;
+    plain  = t->plain;
+
+    /* First pass: compute the output length. */
+    for (i = 0; src[i] != '\0'; i++)
+        out++;
+
+    /* Length excludes the terminator (matches asm R0 semantics). */
+    if (out >= dstlen)
+    {
+        r->r[0] = out;            /* not enough room; buffer indeterminate */
+        return NULL;
+    }
+
+    for (i = 0; i < out; i++)
+    {
+        unsigned char ch = src[i];
+        if (plain != NULL)  ch = plain[ch];   /* strip accent  */
+        if (lower != NULL)  ch = lower[ch];   /* fold case     */
+        if (weight != NULL) ch = weight[ch];  /* collation weight */
+        dst[i] = (char)ch;
+    }
+    if (dstlen > 0)
+        dst[out] = '\0';
+
+    r->r[0] = out;
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Territory_IME  (chunk +34)
+ *   Entry: R0 = territory number or -1.
+ *   Exit:  R0 = the IME SWI chunk for this territory (0 if none).
+ * (asm Entries: "IME" -> LDR r0,=IMESWIChunk; territories with no IME supply
+ *  a chunk of 0.)  The contract now carries ime_chunk, so we return it
+ *  directly; 0 means "this territory has no IME".
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *swi_ime(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror      *err = NULL;
+    const territory_data *t   = registry_require(r->r[0], &err);
+    if (t == NULL)
+        return err ? err : Err_BadTerritory;
+
+    r->r[0] = t->ime_chunk;   /* IME SWI chunk; 0 => no IME */
+    return NULL;
+}

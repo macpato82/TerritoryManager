@@ -1,0 +1,8 @@
+| SPDX-License-Identifier: GPL-3.0-or-later
+|
+| Remove build artefacts for the C Territory Manager.
+| Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+|
+Dir <Obey$Dir>
+amu_machine clean
+stripdepnd

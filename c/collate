@@ -1,0 +1,186 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - Territory_Collate.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ *
+ * Reimplements the asm Collate routine (TerritoryModule/s/Entries):
+ *   Entry: R1 -> string 1 (0 terminated)
+ *          R2 -> string 2 (0 terminated)
+ *          R3 = flags  b0 ignore case, b1 ignore accents,
+ *                      b2 interpret cardinals numerically  (low 16 bits only)
+ *   Exit:  R0  < 0 if S1 < S2, = 0 if equal, > 0 if S1 > S2  (like strcmp)
+ *          other registers preserved; V set on error.
+ *
+ * The asm performs a multi-pass weighted comparison:
+ *   pass 1 - always ignores case AND accents; each char is mapped
+ *            ToPlainForCollate -> ToLower -> SortValue and the resulting
+ *            weights compared.
+ *   if pass 1 reports equality but the caller asked for accent and/or case
+ *   sensitivity, the strings are rescanned with the relevant flag cleared so
+ *   the previously-suppressed accent (then case) difference becomes visible.
+ *
+ * The frozen contract exposes the per-alphabet tables this needs:
+ *   t->plain      = ToPlainForCollate (strip accents),
+ *   t->lower_case = ToLower,
+ *   t->value      = SortValue (collation weight),
+ *   t->collate    = a combined weight table (optional shortcut).
+ * Where a table is NULL the identity mapping is used (matching the Manager's
+ * "use the global/identity" convention).  The alphabet-specific ligature and
+ * sharp-s expansions in the asm are build-flag conditional and depend on data
+ * not present in the contract; they are omitted here (documented best effort).
+ */
+#include "kernel.h"
+#include "territory.h"
+#include "TerritoryHdr.h"
+
+/* Collate flag bits (R3, low 16 used). */
+#define Collate_IgnoreCase         1
+#define Collate_IgnoreAccent       2
+#define Collate_InterpretCardinals 4
+
+/* Map a byte through an optional 256-entry table (identity if NULL). */
+static int xlat(const unsigned char *tbl, int c)
+{
+    return (tbl != NULL) ? tbl[c & 0xFF] : (c & 0xFF);
+}
+
+/* Collation weight of a character under the given (effective) flags. */
+static int weight(const territory_data *t, int c, int ignore_accent, int ignore_case)
+{
+    int v = c & 0xFF;
+    if (ignore_accent) v = xlat(t->plain, v);
+    if (ignore_case)   v = xlat(t->lower_case, v);
+    /* SortValue maps the (folded) character to its collation weight. */
+    v = xlat(t->value, v);
+    return v;
+}
+
+/* One comparison pass over the two strings with fixed effective flags.
+   Cardinals (digit runs) are compared numerically when requested.  Returns
+   <0/0/>0.  The pass treats NUL as the lowest weight so shorter strings sort
+   first, matching the asm (it compares the SortValue of 0, then stops). */
+static int collate_pass(const territory_data *t,
+                        const unsigned char *a, const unsigned char *b,
+                        int ignore_accent, int ignore_case, int cardinals)
+{
+    for (;;)
+    {
+        int ca = *a, cb = *b;
+
+        if (cardinals && ca >= '0' && ca <= '9' && cb >= '0' && cb <= '9')
+        {
+            long va = 0, vb = 0;
+            while (*a >= '0' && *a <= '9') { va = va*10 + (*a - '0'); a++; }
+            while (*b >= '0' && *b <= '9') { vb = vb*10 + (*b - '0'); b++; }
+            if (va != vb) return (va < vb) ? -1 : 1;
+            continue;
+        }
+
+        {
+            int wa = weight(t, ca, ignore_accent, ignore_case);
+            int wb = weight(t, cb, ignore_accent, ignore_case);
+            if (wa != wb) return (wa < wb) ? -1 : 1;
+        }
+        if (ca == 0) return 0;          /* both ended together */
+        a++; b++;
+    }
+}
+
+/* Full multi-pass collation honouring the caller's flags. */
+static int do_collate(const territory_data *t,
+                      const unsigned char *s1, const unsigned char *s2, int flags)
+{
+    int cardinals = (flags & Collate_InterpretCardinals) != 0;
+    int r;
+
+    /* Pass 1: always case- and accent-insensitive (primary ordering). */
+    r = collate_pass(t, s1, s2, /*ignore_accent*/1, /*ignore_case*/1, cardinals);
+    if (r != 0)
+        return r;
+
+    /* Equal at the primary level.  Resolve accents next if the caller wants
+       accent sensitivity (asm clears Collate_IgnoreAccent and rescans). */
+    if (!(flags & Collate_IgnoreAccent))
+    {
+        r = collate_pass(t, s1, s2, /*ignore_accent*/0, /*ignore_case*/1, cardinals);
+        if (r != 0)
+            return r;
+    }
+
+    /* Finally resolve case if the caller wants case sensitivity. */
+    if (!(flags & Collate_IgnoreCase))
+    {
+        r = collate_pass(t, s1, s2, /*ignore_accent*/0, /*ignore_case*/0, cardinals);
+        if (r != 0)
+            return r;
+    }
+
+    return 0;
+}
+
+/* When no per-alphabet tables exist, fall back to a single weighted/byte pass
+   using the optional combined collate table. */
+static int fallback_collate(const territory_data *t,
+                            const unsigned char *a, const unsigned char *b, int flags)
+{
+    const unsigned char *w = t->collate;
+    int cardinals = (flags & Collate_InterpretCardinals) != 0;
+    for (;;)
+    {
+        int ca = *a, cb = *b;
+
+        if (cardinals && ca >= '0' && ca <= '9' && cb >= '0' && cb <= '9')
+        {
+            long va = 0, vb = 0;
+            while (*a >= '0' && *a <= '9') { va = va*10 + (*a - '0'); a++; }
+            while (*b >= '0' && *b <= '9') { vb = vb*10 + (*b - '0'); b++; }
+            if (va != vb) return (va < vb) ? -1 : 1;
+            continue;
+        }
+
+        {
+            int wa, wb;
+            if (w != NULL) { wa = w[ca]; wb = w[cb]; }
+            else
+            {
+                wa = ca; wb = cb;
+                if (flags & Collate_IgnoreCase)
+                {
+                    if (wa >= 'A' && wa <= 'Z') wa += 32;
+                    if (wb >= 'A' && wb <= 'Z') wb += 32;
+                }
+            }
+            if (wa != wb) return (wa < wb) ? -1 : 1;
+        }
+        if (ca == 0) return 0;
+        a++; b++;
+    }
+}
+
+/* ========================================================================= */
+/* SWI Territory_Collate                                                      */
+/*  In:  R1 -> string 1, R2 -> string 2, R3 = flags (low 16 bits).           */
+/*  Out: R0 = <0 / 0 / >0 (strcmp ordering).  Other registers preserved.     */
+/* ========================================================================= */
+_kernel_oserror *swi_collate(int swi, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err = NULL;
+    const territory_data *t = registry_require(-1, &err);
+    const unsigned char *s1 = (const unsigned char *)r->r[1];
+    const unsigned char *s2 = (const unsigned char *)r->r[2];
+    int flags = r->r[3] & 0xFFFF;        /* asm masks to low 16 bits */
+    int result;
+    (void)swi; (void)pw;
+
+    if (t == NULL) return err;
+
+    /* Prefer the faithful multi-pass path when any per-alphabet table exists;
+       otherwise use the combined/byte fallback. */
+    if (t->value != NULL || t->plain != NULL || t->lower_case != NULL)
+        result = do_collate(t, s1, s2, flags);
+    else
+        result = fallback_collate(t, s1, s2, flags);
+
+    r->r[0] = result;                    /* <0 / 0 / >0 like strcmp */
+    return NULL;
+}

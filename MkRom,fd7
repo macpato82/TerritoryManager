@@ -1,0 +1,7 @@
+| SPDX-License-Identifier: GPL-3.0-or-later
+|
+| Build the ROM (AOF) version of the C Territory Manager.
+| Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+|
+Dir <Obey$Dir>
+amu_machine rom

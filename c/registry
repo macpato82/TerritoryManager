@@ -1,0 +1,128 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - the registry of registered territories and
+ * the currently-selected one.  This is the manager's core state.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ */
+#include <string.h>
+#include "territory.h"
+#include "TerritoryHdr.h"
+
+#define MAX_TERRITORIES 64
+
+static const territory_data *territories[MAX_TERRITORIES];
+static int                   num_territories;
+static int                   current_number;     /* 0 == none selected yet */
+
+_kernel_oserror *registry_init(void)
+{
+    num_territories = 0;
+    current_number  = 0;
+    return NULL;
+}
+
+void registry_final(void)
+{
+    num_territories = 0;
+    current_number  = 0;
+}
+
+const territory_data *registry_find(int number)
+{
+    int i;
+    for (i = 0; i < num_territories; i++)
+    {
+        if (territories[i]->number == number)
+            return territories[i];
+    }
+    return NULL;
+}
+
+const territory_data *registry_find_by_name(const char *name)
+{
+    int i;
+    if (name == NULL)
+        return NULL;
+    for (i = 0; i < num_territories; i++)
+    {
+        if (territories[i]->name != NULL &&
+            strcmp(territories[i]->name, name) == 0)
+            return territories[i];
+    }
+    return NULL;
+}
+
+int registry_current(void)
+{
+    return current_number;
+}
+
+int registry_resolve(int number)
+{
+    return (number == -1) ? current_number : number;
+}
+
+int registry_count(void)
+{
+    return num_territories;
+}
+
+const territory_data *registry_at(int index)
+{
+    if (index < 0 || index >= num_territories)
+        return NULL;
+    return territories[index];
+}
+
+_kernel_oserror *registry_register(const territory_data *t)
+{
+    if (t == NULL)
+        return Err_BadTerritory;
+    if (registry_find(t->number) != NULL)
+        return NULL;                       /* already known: no-op */
+    if (num_territories >= MAX_TERRITORIES)
+        return Err_BadTerritory;
+
+    territories[num_territories++] = t;
+    if (current_number == 0)
+        current_number = t->number;        /* first registered becomes current */
+    return NULL;
+}
+
+_kernel_oserror *registry_deregister(int number)
+{
+    int i;
+    for (i = 0; i < num_territories; i++)
+    {
+        if (territories[i]->number == number)
+        {
+            territories[i] = territories[--num_territories];
+            if (current_number == number)
+                current_number = (num_territories > 0) ? territories[0]->number : 0;
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
+_kernel_oserror *registry_exists(int number, int *exists_out)
+{
+    *exists_out = (registry_find(registry_resolve(number)) != NULL);
+    return NULL;
+}
+
+_kernel_oserror *registry_select(int number)
+{
+    if (registry_find(number) == NULL)
+        return Err_BadTerritory;
+    current_number = number;
+    return NULL;
+}
+
+const territory_data *registry_require(int number, _kernel_oserror **err)
+{
+    const territory_data *t = registry_find(registry_resolve(number));
+    if (t == NULL)
+        *err = Err_BadTerritory;
+    return t;
+}

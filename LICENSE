@@ -1,0 +1,24 @@
+                    GNU GENERAL PUBLIC LICENSE
+                       Version 3, 29 June 2007
+
+This component (the C rewrite of the RISC OS Territory system) is free
+software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation,
+either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program.  If not, see <https://www.gnu.org/licenses/>.
+
+  Copyright (C) 2026 Martin Eastwood and contributors.
+
+NOTE: ship the full canonical GPLv3 text (https://www.gnu.org/licenses/gpl-3.0.txt)
+as the file `COPYING` alongside this LICENSE for distribution. Each source file
+carries an SPDX-License-Identifier: GPL-3.0-or-later tag and the standard notice.
+
+This is NEW, first-party code (a clean reimplementation against the published
+Territory SWI ABI), so it is ours to license under the GPL. It does not copy the
+Apache-licensed assembler sources; it reimplements the documented interface.

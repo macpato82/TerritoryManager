@@ -1,0 +1,59 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - central SWI dispatcher.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ *
+ * cmhg calls territory_swi(offset, regs, pw) for any Territory_* SWI; we route
+ * by offset to the per-SWI handler.  Offsets match the swi-decoding-table order
+ * in cmhg/TerritoryHdr (the ABI).  Reserved slots 36..52 -> bad SWI.
+ */
+#include "territory.h"
+#include "TerritoryHdr.h"   /* error_BAD_SWI */
+
+_kernel_oserror *territory_swi(int swi, _kernel_swi_regs *r, void *pw)
+{
+    switch (swi)
+    {
+        case  0: return swi_number(swi, r, pw);
+        case  1: return swi_register(swi, r, pw);
+        case  2: return swi_deregister(swi, r, pw);
+        case  3: return swi_numbertoname(swi, r, pw);
+        case  4: return swi_exists(swi, r, pw);
+        case  5: return swi_alphabetnumbertoname(swi, r, pw);
+        case  6: return swi_selectalphabet(swi, r, pw);
+        case  7: return swi_settime(swi, r, pw);
+        case  8: return swi_readcurrenttimezone(swi, r, pw);
+        case  9: return swi_converttimetoutcordinals(swi, r, pw);
+        case 10: return swi_readtimezones(swi, r, pw);
+        case 11: return swi_convertdateandtime(swi, r, pw);
+        case 12: return swi_convertstandarddateandtime(swi, r, pw);
+        case 13: return swi_convertstandarddate(swi, r, pw);
+        case 14: return swi_convertstandardtime(swi, r, pw);
+        case 15: return swi_converttimetoordinals(swi, r, pw);
+        case 16: return swi_converttimestringtoordinals(swi, r, pw);
+        case 17: return swi_convertordinalstotime(swi, r, pw);
+        case 18: return swi_alphabet(swi, r, pw);
+        case 19: return swi_alphabetidentifier(swi, r, pw);
+        case 20: return swi_selectkeyboardhandler(swi, r, pw);
+        case 21: return swi_writedirection(swi, r, pw);
+        case 22: return swi_charpropertytable(swi, r, pw);
+        case 23: return swi_lowercasetable(swi, r, pw);
+        case 24: return swi_uppercasetable(swi, r, pw);
+        case 25: return swi_controltable(swi, r, pw);
+        case 26: return swi_plaintable(swi, r, pw);
+        case 27: return swi_valuetable(swi, r, pw);
+        case 28: return swi_representationtable(swi, r, pw);
+        case 29: return swi_collate(swi, r, pw);
+        case 30: return swi_readsymbols(swi, r, pw);
+        case 31: return swi_readcalendarinformation(swi, r, pw);
+        case 32: return swi_nametonumber(swi, r, pw);
+        case 33: return swi_transformstring(swi, r, pw);
+        case 34: return swi_ime(swi, r, pw);
+        case 35: return swi_daylightrules(swi, r, pw);
+        /* 36..52 reserved */
+        case 53: return swi_converttexttostring(swi, r, pw);
+        case 54: return swi_select(swi, r, pw);
+        case 55: return swi_daylightsaving(swi, r, pw);
+        default: return error_BAD_SWI;
+    }
+}

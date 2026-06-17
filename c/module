@@ -1,0 +1,119 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - module entry points and *Commands.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+#include "swis.h"
+#include "territory.h"
+#include "TerritoryHdr.h"
+
+/* --- Module lifecycle ---------------------------------------------------- */
+
+_kernel_oserror *mod_init(const char *cmd_tail, int podule_base, void *pw)
+{
+    _kernel_oserror *e;
+    (void)cmd_tail; (void)podule_base; (void)pw;
+    e = registry_init();
+    if (e != NULL)
+        return e;
+    return register_builtins();
+}
+
+_kernel_oserror *mod_final(int fatal, int podule_base, void *pw)
+{
+    (void)fatal; (void)podule_base; (void)pw;
+    registry_final();
+    return NULL;
+}
+
+/* --- small VDU output helpers (NOT printf: that goes to the debug stream) - */
+
+static _kernel_oserror *put0(const char *s)
+{
+    return _swix(OS_Write0, _IN(0), s);
+}
+
+static _kernel_oserror *put_line(const char *s)
+{
+    _kernel_oserror *e = put0(s);
+    if (e != NULL)
+        return e;
+    return _swix(OS_NewLine, 0);
+}
+
+/* --- *Territory [<number>|<name>] ---------------------------------------- */
+
+static _kernel_oserror *cmd_territory(const char *arg, int argc)
+{
+    char buf[64];
+
+    if (argc == 0)
+    {
+        const territory_data *f = registry_find(registry_current());
+        if (f == NULL)
+            return put_line("No territory selected");
+        sprintf(buf, "%s (%d)", f->name, f->number);
+        return put_line(buf);
+    }
+
+    while (*arg == ' ')
+        arg++;
+
+    if (isdigit((unsigned char)*arg))
+    {
+        return registry_select((int)strtol(arg, NULL, 10));
+    }
+    else
+    {
+        char name[64];
+        int  i = 0;
+        const territory_data *f;
+        while (arg[i] != '\0' && arg[i] != ' ' && i < (int)sizeof(name) - 1)
+        {
+            name[i] = arg[i];
+            i++;
+        }
+        name[i] = '\0';
+        f = registry_find_by_name(name);
+        if (f == NULL)
+            return Err_BadTerritory;
+        return registry_select(f->number);
+    }
+}
+
+/* --- *Territories -------------------------------------------------------- */
+
+static _kernel_oserror *cmd_territories(void)
+{
+    int  n = registry_count();
+    int  i;
+    char buf[80];
+
+    for (i = 0; i < n; i++)
+    {
+        const territory_data *f = registry_at(i);
+        _kernel_oserror *e;
+        sprintf(buf, "  %3d  %s%s", f->number, f->name,
+                (f->number == registry_current()) ? " (current)" : "");
+        e = put_line(buf);
+        if (e != NULL)
+            return e;
+    }
+    return NULL;
+}
+
+_kernel_oserror *mod_command(const char *arg_string, int argc, int cmd_no, void *pw)
+{
+    (void)pw;
+    switch (cmd_no)
+    {
+        case 0:  return cmd_territory(arg_string, argc);
+        case 1:  return cmd_territories();
+        default: return NULL;
+    }
+}

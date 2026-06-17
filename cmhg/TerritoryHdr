@@ -1,0 +1,56 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+;
+; CMHG header for the C rewrite of the RISC OS Territory Manager.
+; Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+;
+; This uses the standard Acorn cmhg syntax (a single central swi-handler-code
+; plus a names-only swi-decoding-table; errors are defined in C, not via the
+; CMunge-only error-base/error-identifiers directives).
+; Keep the section comments to guide future authors.
+; ----------------------------------------------------------------------------
+
+#include "VersionNum"
+
+; --- Identity ---------------------------------------------------------------
+title-string:          TerritoryManager
+help-string:           TerritoryManager Module_MajorVersion_CMHG Module_MinorVersion_CMHG
+date-string:           Module_Date_CMHG
+
+; --- Module entry points ----------------------------------------------------
+initialisation-code:   mod_init
+finalisation-code:     mod_final
+
+; Service handling is added in a later phase (Service_Territory*/reset).
+; service-call-handler: mod_service Service_Reset
+
+; --- SWIs -------------------------------------------------------------------
+; Territory SWIs live in the system SWI range; chunk base is &43040.
+; A single central handler (territory_swi) dispatches by SWI offset to the
+; per-SWI C functions (c/dispatch).  The decode table is names-only and its
+; ORDER IS THE ABI - do not reorder.  Reserved slots 36..52 dispatch to the
+; bad-SWI path.
+swi-chunk-base-number:  0x43040
+swi-handler-code:       territory_swi
+swi-decoding-table:     Territory \
+    Number Register Deregister NumberToName Exists \
+    AlphabetNumberToName SelectAlphabet SetTime ReadCurrentTimeZone \
+    ConvertTimeToUTCOrdinals ReadTimeZones ConvertDateAndTime \
+    ConvertStandardDateAndTime ConvertStandardDate ConvertStandardTime \
+    ConvertTimeToOrdinals ConvertTimeStringToOrdinals ConvertOrdinalsToTime \
+    Alphabet AlphabetIdentifier SelectKeyboardHandler WriteDirection \
+    CharacterPropertyTable LowerCaseTable UpperCaseTable ControlTable \
+    PlainTable ValueTable RepresentationTable Collate ReadSymbols \
+    ReadCalendarInformation NameToNumber TransformString IME DaylightRules \
+    Reserved1 Reserved2 Reserved3 Reserved4 Reserved5 Reserved6 Reserved7 \
+    Reserved8 Reserved9 Reserved10 Reserved11 Reserved12 Reserved13 \
+    Reserved14 Reserved15 Reserved16 Reserved17 \
+    ConvertTextToString Select DaylightSaving
+
+; --- *Commands --------------------------------------------------------------
+command-keyword-table:  mod_command \
+    Territory(min-args: 0, max-args: 1, \
+              invalid-syntax: "Syntax: *Territory [<number>|<name>]", \
+              help-text: "*Territory selects or reports the current territory.\n"), \
+    Territories(min-args: 0, max-args: 0, \
+              invalid-syntax: "Syntax: *Territories", \
+              help-text: "*Territories lists the registered territories.\n")

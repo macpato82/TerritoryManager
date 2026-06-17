@@ -1,0 +1,58 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - built-in territory registration.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ *
+ * The C rewrite consolidates the old asm TerritoryManager + TerritoryModule into
+ * one module: the manager logic plus the built-in territory data tables, which
+ * are registered here at module initialisation.
+ */
+#include "territory.h"
+#include "TerritoryHdr.h"
+
+extern const territory_data territory_uk;
+extern const territory_data territory_usa;
+extern const territory_data territory_ireland;
+extern const territory_data territory_canada1;
+extern const territory_data territory_france;
+extern const territory_data territory_germany;
+extern const territory_data territory_italy;
+extern const territory_data territory_spain;
+extern const territory_data territory_portugal;
+extern const territory_data territory_netherlands;
+extern const territory_data territory_denmark;
+extern const territory_data territory_norway;
+extern const territory_data territory_sweden;
+extern const territory_data territory_finland;
+extern const territory_data territory_iceland;
+extern const territory_data territory_australia;
+extern const territory_data territory_safrica;
+extern const territory_data territory_turkey;
+extern const territory_data territory_japan;
+extern const territory_data territory_korea;
+extern const territory_data territory_taiwan;
+
+static const territory_data *const builtins[] =
+{
+    &territory_uk,        &territory_usa,      &territory_ireland,
+    &territory_canada1,   &territory_france,   &territory_germany,
+    &territory_italy,     &territory_spain,    &territory_portugal,
+    &territory_netherlands, &territory_denmark, &territory_norway,
+    &territory_sweden,    &territory_finland,  &territory_iceland,
+    &territory_australia, &territory_safrica,  &territory_turkey,
+    &territory_japan,     &territory_korea,    &territory_taiwan
+};
+
+#define NUM_BUILTINS ((int)(sizeof(builtins) / sizeof(builtins[0])))
+
+_kernel_oserror *register_builtins(void)
+{
+    int i;
+    for (i = 0; i < NUM_BUILTINS; i++)
+    {
+        _kernel_oserror *e = registry_register(builtins[i]);
+        if (e != NULL)
+            return e;
+    }
+    return NULL;
+}

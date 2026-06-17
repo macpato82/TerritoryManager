@@ -1,0 +1,20 @@
+# RISC OS DDE build artefacts
+o/
+o._*
+oz32/
+oz64/
+rm/
+rm32/
+rm64/
+aof/
+aof32/
+aif/
+linked/
+gpa/
+i/
+od/
+*.o
+_ResData_/
+_ResGen_/
+*Msgs
+!Depend

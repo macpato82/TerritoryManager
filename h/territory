@@ -1,0 +1,228 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Territory system (C rewrite) - the FROZEN data contract.
+ * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ *
+ * Design: a registered territory is PURE DATA (this struct).  The Manager
+ * implements every Territory_* operation generically against this data, so the
+ * 21 territory ports are just data transcription (no per-territory code).
+ *
+ * This header is the shared contract for ALL components/subagents - do not
+ * change a field without updating every territory and every SWI handler.
+ * Field layout mirrors the asm Entries / SymbolTable / CalendarInfo / tz_table.
+ */
+#ifndef territory_H
+#define territory_H
+
+#include <stddef.h>     /* NULL */
+#include "kernel.h"
+
+/* A calendar era (e.g. Japanese Heisei/Reiwa) for %JE/%J1/%JY formatting.
+   Defined early because territory_calendar refers to it. */
+typedef struct territory_era
+{
+    int         start_year;   /* Gregorian year the era began */
+    int         start_month;  /* 1..12 */
+    int         start_dom;    /* day of month */
+    const char *name;         /* full era name */
+    const char *abbrev;       /* short era name */
+} territory_era;
+
+/* Territory_ReadSymbols - the C-locale lconv equivalent (asm SymbolTable). */
+typedef struct territory_symbols
+{
+    const char *decimal_point;
+    const char *thousands_sep;
+    const char *grouping;
+    const char *int_curr_symbol;
+    const char *currency_symbol;
+    const char *mon_decimal_point;
+    const char *mon_thousands_sep;
+    const char *mon_grouping;
+    const char *positive_sign;
+    const char *negative_sign;
+    int         int_frac_digits;
+    int         frac_digits;
+    int         p_cs_precedes;
+    int         p_sep_by_space;
+    int         n_cs_precedes;
+    int         n_sep_by_space;
+    int         p_sign_posn;
+    int         n_sign_posn;
+    const char *list_symbol;
+} territory_symbols;
+
+/* Territory_ReadCalendarInformation (asm CalendarInfo: 11 fixed words) plus the
+ * name tables that the asm pulled from the messages file. */
+typedef struct territory_calendar
+{
+    int first_work_day;     /* 1=Sun .. 7=Sat */
+    int last_work_day;
+    int num_months;
+    int max_ampm_len;
+    int max_fullday_len;    /* MaxWELength */
+    int max_shortday_len;   /* MaxW3Length */
+    int max_day_len;        /* MaxDYLength */
+    int max_suffix_len;     /* MaxSTLength (st/nd/rd/th) */
+    int max_fullmonth_len;  /* MaxMOLength */
+    int max_shortmonth_len; /* MaxM3Length */
+    int max_tz_len;         /* MaxTZLength */
+
+    const char *const *month_full;   /* [num_months] */
+    const char *const *month_short;  /* [num_months] */
+    const char *const *day_full;     /* [7], index 0 = Sunday */
+    const char *const *day_short;    /* [7] */
+    const char *am_string;
+    const char *pm_string;
+    const char *const *ordinal_suffix; /* by day-of-month 1..31, or rule-based */
+
+    const territory_era *eras;         /* calendar eras (Japan); NULL if none */
+    int                  num_eras;
+} territory_calendar;
+
+/* A daylight-saving transition rule (when DST starts/ends).  NULL => no DST. */
+typedef struct territory_dst_rule
+{
+    int start_month;   /* 1..12 */
+    int start_week;    /* 1..5 (5 = last), or 0 if start_dom used */
+    int start_dow;     /* 1=Sun..7=Sat, or 0 */
+    int start_dom;     /* day-of-month, or 0 if week/dow used */
+    int start_time;    /* local minutes after midnight of the transition */
+    int end_month;
+    int end_week;
+    int end_dow;
+    int end_dom;
+    int end_time;
+} territory_dst_rule;
+
+/* One timezone entry (asm tz_table: $offstd, $offdst pairs + names). */
+typedef struct territory_timezone
+{
+    int         std_offset_min;   /* minutes east of UTC, standard time */
+    int         dst_offset_min;   /* minutes east of UTC, daylight time */
+    const char *std_name;
+    const char *dst_name;
+    const territory_dst_rule *dst_rule;  /* NULL => DST never applies */
+} territory_timezone;
+
+/* A complete territory definition. */
+typedef struct territory_data
+{
+    int         number;             /* e.g. 1 = UK */
+    const char *name;               /* "UK", "USA", ... (matches NameToNumber) */
+
+    int         default_alphabet;   /* alphabet number (e.g. 101 = Latin1) */
+    const char *alphabet_name;      /* AlphabetIdentifier string */
+    int         keyboard;           /* SelectKeyboardHandler number */
+    int         write_direction;    /* WriteDirection flags */
+    int         ime_chunk;          /* Territory_IME SWI chunk (0 if none) */
+
+    /* 256-entry tables for the default alphabet (Territory_*Table SWIs).
+       Any may be NULL, in which case the Manager uses the identity/global. */
+    const unsigned char *lower_case;
+    const unsigned char *upper_case;
+    const unsigned char *control;
+    const unsigned char *plain;
+    const unsigned char *value;
+    const unsigned char *representation;
+    const unsigned char *property;     /* CharacterPropertyTable */
+    const unsigned char *collate;      /* weight table; NULL => byte compare */
+
+    territory_symbols    symbols;
+    territory_calendar   calendar;
+
+    const territory_timezone *timezones;
+    int                       num_timezones;
+
+    /* Default format strings for Territory_ConvertDateAndTime (%-style, as the
+       asm stored). */
+    const char *date_format;
+    const char *time_format;
+    const char *datetime_format;
+} territory_data;
+
+/* ------------------------------------------------------------------------
+ * Registry (manager state) - c/registry.
+ * ------------------------------------------------------------------------ */
+_kernel_oserror *registry_init   (void);
+void             registry_final  (void);
+_kernel_oserror *registry_register  (const territory_data *t);
+_kernel_oserror *registry_deregister(int number);
+const territory_data *registry_find        (int number);
+const territory_data *registry_find_by_name(const char *name);
+int                   registry_current     (void);
+int                   registry_resolve     (int number); /* -1 -> current */
+int                   registry_count       (void);
+const territory_data *registry_at          (int index);
+_kernel_oserror *registry_select  (int number);
+_kernel_oserror *registry_exists  (int number, int *exists_out);
+
+/* Error blocks (defined in c/errors; numbers = ErrorBase_TerritoryManager &190+).
+   The standard cmhg has no error-identifiers, so we expose them as macros. */
+extern const _kernel_oserror territory_err_badterritory;
+extern const _kernel_oserror territory_err_unknownalpha;
+extern const _kernel_oserror territory_err_noterritory;
+extern const _kernel_oserror territory_err_unknownprop;
+extern const _kernel_oserror territory_err_badtimestr;
+extern const _kernel_oserror territory_err_badtimeblock;
+extern const _kernel_oserror territory_err_nomorezones;
+extern const _kernel_oserror territory_err_norule;
+#define Err_BadTerritory    ((_kernel_oserror *)&territory_err_badterritory)
+#define Err_UnknownAlphabet ((_kernel_oserror *)&territory_err_unknownalpha)
+#define Err_NoTerritory     ((_kernel_oserror *)&territory_err_noterritory)
+#define Err_UnknownProperty ((_kernel_oserror *)&territory_err_unknownprop)
+#define Err_BadTimeString   ((_kernel_oserror *)&territory_err_badtimestr)
+#define Err_BadTimeBlock    ((_kernel_oserror *)&territory_err_badtimeblock)
+#define Err_NoMoreZones     ((_kernel_oserror *)&territory_err_nomorezones)
+#define Err_NoRuleDefined   ((_kernel_oserror *)&territory_err_norule)
+
+/* Per-SWI handler functions (defined across c/swi, c/tables, c/datetime,
+   c/collate) - the central dispatcher (c/dispatch) calls these by SWI offset. */
+_kernel_oserror *swi_number(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_register(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_deregister(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_numbertoname(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_exists(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_nametonumber(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_select(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_alphabet(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_alphabetidentifier(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_alphabetnumbertoname(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_selectalphabet(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_selectkeyboardhandler(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_writedirection(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_charpropertytable(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_lowercasetable(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_uppercasetable(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_controltable(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_plaintable(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_valuetable(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_representationtable(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_readsymbols(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_readcalendarinformation(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_transformstring(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_ime(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_collate(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_settime(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_readcurrenttimezone(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_converttimetoutcordinals(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_readtimezones(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_convertdateandtime(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_convertstandarddateandtime(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_convertstandarddate(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_convertstandardtime(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_converttimetoordinals(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_converttimestringtoordinals(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_convertordinalstotime(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_converttexttostring(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_daylightrules(int, _kernel_swi_regs *, void *);
+_kernel_oserror *swi_daylightsaving(int, _kernel_swi_regs *, void *);
+
+/* Register all built-in territories (c/territories). */
+_kernel_oserror *register_builtins(void);
+
+/* Convenience for SWI handlers: resolve R0 (territory or -1) to its data, or
+   return Err_BadTerritory via *err. Returns NULL on failure. */
+const territory_data *registry_require(int number, _kernel_oserror **err);
+
+#endif
