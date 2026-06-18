@@ -24,6 +24,24 @@ _kernel_oserror *mod_init(const char *cmd_tail, int podule_base, void *pw)
     e = register_builtins();
     if (e != NULL)
         return e;
+
+    /* Honour the configured territory (TerritoryCMOS &18) so the C library and
+       applications (e.g. date formatting in mail/filer) get the right locale
+       from boot.  Safe during init: this only reads CMOS and updates our
+       current-territory record - no RTC reads, callbacks or service calls.
+       Falls back to the first-registered territory if CMOS is unset/unknown. */
+    {
+        _kernel_swi_regs cr;
+        cr.r[0] = 161;                 /* OsByte_ReadCMOS */
+        cr.r[1] = 0x18;                /* TerritoryCMOS   */
+        if (_kernel_swi(OS_Byte, &cr, &cr) == NULL)
+        {
+            int terr = cr.r[2] & 0xFF;
+            if (terr != 0 && registry_find(terr) != NULL)
+                (void)registry_select(terr);
+        }
+    }
+
     /* Initialise AutoDST state only.  We deliberately do NOT evaluate DST
        during module init: reading the RTC / scheduling OS_CallAfter / issuing
        Service_TimeZoneChanged before the system is fully up is unsafe at boot.
