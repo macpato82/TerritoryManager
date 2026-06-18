@@ -191,41 +191,11 @@ static const char *const uk_ordinal_suffix[4] = { "th","st","nd","rd" };
 static const territory_dst_rule uk_dst =
 { 3, 5, 1, 0, 60,  10, 5, 1, 0, 60 };
 
-/* NB: timezone names are named arrays, not inline string literals.  Inline
-   string-literal initialisers for struct-pointer fields are not relocated
-   reliably in this module (they read back empty); pointers to named static
-   objects relocate correctly.  Same pattern applied to name/formats below. */
-static const char uk_tz_gmt[] = "GMT";
-static const char uk_tz_bst[] = "BST";
-
 static const territory_timezone uk_timezones[1] =
 {
     /* GMT std = UTC+0, BST dst = UTC+60min */
-    { 0, 60, uk_tz_gmt, uk_tz_bst, &uk_dst }
+    { 0, 60, "GMT", "BST", &uk_dst }
 };
-
-/* Territory name and default date/time format strings, as named arrays. */
-static const char uk_name[]            = "UK";
-static const char uk_date_format[]     = "%dy-%m3-%ce%yr";
-static const char uk_time_format[]     = "%24:%mi:%se";
-static const char uk_datetime_format[] = "%24:%mi:%se %dy-%m3-%ce%yr";
-
-/* Alphabet name, locale/currency symbols and am/pm strings - all as named
-   arrays (inline string literals in the struct do not relocate; see above). */
-static const char uk_alphabet_name[] = "Latin1";
-static const char uk_sym_dp[]     = ".";
-static const char uk_sym_ts[]     = ",";
-static const char uk_sym_grp[]    = "\3\0";   /* group of 3, then repeat */
-static const char uk_sym_intcur[] = "GBP ";
-static const char uk_sym_cur[]    = "\xA3";   /* pound sign (Latin1 A3) */
-static const char uk_sym_mdp[]    = ".";
-static const char uk_sym_mts[]    = " ";
-static const char uk_sym_mgrp[]   = "\3\0";
-static const char uk_sym_pos[]    = "";
-static const char uk_sym_neg[]    = "-";
-static const char uk_sym_list[]   = ";";
-static const char uk_am[]         = "am";
-static const char uk_pm[]         = "pm";
 
 /* ----------------------------------------------------------------------
  * The territory definition.
@@ -234,10 +204,10 @@ static const char uk_pm[]         = "pm";
 const territory_data territory_uk =
 {
     .number          = 1,
-    .name            = uk_name,
+    .name            = "UK",
 
     .default_alphabet = 101,            /* ISOAlphabet_Latin1 */
-    .alphabet_name    = uk_alphabet_name,
+    .alphabet_name    = "Latin1",
     .keyboard         = 1,              /* OS_Byte alphabet 128+TerrNum, TerrNum=1 */
     .write_direction  = 0,              /* LtR | UpToDown(0) | HorizLines(0) = 0 */
     .ime_chunk       = 0,
@@ -253,16 +223,16 @@ const territory_data territory_uk =
 
     .symbols =
     {
-        .decimal_point     = uk_sym_dp,
-        .thousands_sep     = uk_sym_ts,
-        .grouping          = uk_sym_grp,
-        .int_curr_symbol   = uk_sym_intcur,
-        .currency_symbol   = uk_sym_cur,
-        .mon_decimal_point = uk_sym_mdp,
-        .mon_thousands_sep = uk_sym_mts,
-        .mon_grouping      = uk_sym_mgrp,
-        .positive_sign     = uk_sym_pos,
-        .negative_sign     = uk_sym_neg,
+        .decimal_point     = ".",
+        .thousands_sep     = ",",
+        .grouping          = "\3\0",    /* "3,0": group of 3, then repeat */
+        .int_curr_symbol   = "GBP ",
+        .currency_symbol   = "\xA3",    /* pound sign (Latin1 A3) */
+        .mon_decimal_point = ".",
+        .mon_thousands_sep = " ",
+        .mon_grouping      = "\3\0",
+        .positive_sign     = "",
+        .negative_sign     = "-",
         .int_frac_digits   = 2,
         .frac_digits       = 2,
         .p_cs_precedes     = 1,
@@ -271,7 +241,7 @@ const territory_data territory_uk =
         .n_sep_by_space    = 0,
         .p_sign_posn       = 1,
         .n_sign_posn       = 1,
-        .list_symbol       = uk_sym_list
+        .list_symbol       = ";"
     },
 
     .calendar =
@@ -291,8 +261,8 @@ const territory_data territory_uk =
         .month_short       = uk_month_short,
         .day_full          = uk_day_full,
         .day_short         = uk_day_short,
-        .am_string         = uk_am,
-        .pm_string         = uk_pm,
+        .am_string         = "am",
+        .pm_string         = "pm",
         .ordinal_suffix    = uk_ordinal_suffix,
         .eras              = NULL,
         .num_eras          = 0
@@ -301,7 +271,7 @@ const territory_data territory_uk =
     .timezones       = uk_timezones,
     .num_timezones   = 1,
 
-    .date_format     = uk_date_format,
-    .time_format     = uk_time_format,
-    .datetime_format = uk_datetime_format
+    .date_format     = "%dy-%m3-%ce%yr",
+    .time_format     = "%24:%mi:%se",
+    .datetime_format = "%24:%mi:%se %dy-%m3-%ce%yr"
 };

@@ -24,23 +24,27 @@ typedef struct territory_era
     int         start_year;   /* Gregorian year the era began */
     int         start_month;  /* 1..12 */
     int         start_dom;    /* day of month */
-    const char *name;         /* full era name */
-    const char *abbrev;       /* short era name */
+    char        name[40];     /* full era name */
+    char        abbrev[20];   /* short era name */
 } territory_era;
 
 /* Territory_ReadSymbols - the C-locale lconv equivalent (asm SymbolTable). */
 typedef struct territory_symbols
 {
-    const char *decimal_point;
-    const char *thousands_sep;
-    const char *grouping;
-    const char *int_curr_symbol;
-    const char *currency_symbol;
-    const char *mon_decimal_point;
-    const char *mon_thousands_sep;
-    const char *mon_grouping;
-    const char *positive_sign;
-    const char *negative_sign;
+    /* These are inline char arrays, not pointers: inline string-literal
+       initialisers for pointer fields do not relocate reliably in this module
+       (they read back empty/garbage), whereas data stored inline in the struct
+       needs no relocation.  See the same change across the other structs. */
+    char        decimal_point[4];
+    char        thousands_sep[4];
+    char        grouping[8];
+    char        int_curr_symbol[8];
+    char        currency_symbol[12];
+    char        mon_decimal_point[4];
+    char        mon_thousands_sep[4];
+    char        mon_grouping[8];
+    char        positive_sign[6];
+    char        negative_sign[6];
     int         int_frac_digits;
     int         frac_digits;
     int         p_cs_precedes;
@@ -49,7 +53,7 @@ typedef struct territory_symbols
     int         n_sep_by_space;
     int         p_sign_posn;
     int         n_sign_posn;
-    const char *list_symbol;
+    char        list_symbol[6];
 } territory_symbols;
 
 /* Territory_ReadCalendarInformation (asm CalendarInfo: 11 fixed words) plus the
@@ -72,8 +76,8 @@ typedef struct territory_calendar
     const char *const *month_short;  /* [num_months] */
     const char *const *day_full;     /* [7], index 0 = Sunday */
     const char *const *day_short;    /* [7] */
-    const char *am_string;
-    const char *pm_string;
+    char        am_string[12];
+    char        pm_string[12];
     const char *const *ordinal_suffix; /* by day-of-month 1..31, or rule-based */
 
     const territory_era *eras;         /* calendar eras (Japan); NULL if none */
@@ -100,8 +104,8 @@ typedef struct territory_timezone
 {
     int         std_offset_min;   /* minutes east of UTC, standard time */
     int         dst_offset_min;   /* minutes east of UTC, daylight time */
-    const char *std_name;
-    const char *dst_name;
+    char        std_name[12];
+    char        dst_name[12];
     const territory_dst_rule *dst_rule;  /* NULL => DST never applies */
 } territory_timezone;
 
@@ -109,10 +113,10 @@ typedef struct territory_timezone
 typedef struct territory_data
 {
     int         number;             /* e.g. 1 = UK */
-    const char *name;               /* "UK", "USA", ... (matches NameToNumber) */
+    char        name[40];           /* "UK", "USA", ... (matches NameToNumber) */
 
     int         default_alphabet;   /* alphabet number (e.g. 101 = Latin1) */
-    const char *alphabet_name;      /* AlphabetIdentifier string */
+    char        alphabet_name[20];  /* AlphabetIdentifier string */
     int         keyboard;           /* SelectKeyboardHandler number */
     int         write_direction;    /* WriteDirection flags */
     int         ime_chunk;          /* Territory_IME SWI chunk (0 if none) */
@@ -136,9 +140,9 @@ typedef struct territory_data
 
     /* Default format strings for Territory_ConvertDateAndTime (%-style, as the
        asm stored). */
-    const char *date_format;
-    const char *time_format;
-    const char *datetime_format;
+    char        date_format[48];
+    char        time_format[32];
+    char        datetime_format[80];
 } territory_data;
 
 /* ------------------------------------------------------------------------
