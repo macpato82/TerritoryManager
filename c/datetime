@@ -619,10 +619,12 @@ static const territory_dst_rule *find_rule(const territory_data *t, int tz_index
 #define Err_CDATBufferOverflow  Err_BadTimeBlock
 #define Err_CDATBadField        Err_BadTimeString
 
-/* Print exactly 'digits' columns of 'value', suppressing leading zeros down
-   to the last digit.  Returns chars written, or -1 if no room.  Mirrors
-   CDATDecR4. */
-static int emit_number(char *buf, int avail, int value, int digits)
+/* Print 'value' in a field of 'digits' columns.  By default the field is
+   zero-padded to its full width (e.g. minute 8 with digits=2 -> "08").  When
+   'suppress' is set (the %Z<code> variant) leading zeros are suppressed down to
+   the last digit (-> "8").  Returns chars written, or -1 if no room.  Mirrors
+   CDATDecR4 (suppress) / CDATDecR4 zero-padded default. */
+static int emit_number(char *buf, int avail, int value, int digits, int suppress)
 {
     char tmp[6];
     int  n = 0, i, written = 0, started = 0;
@@ -634,7 +636,7 @@ static int emit_number(char *buf, int avail, int value, int digits)
     for (i = digits; i >= 1; i--)
     {
         int d = (value / pow) % 10;
-        if (d != 0 || started || i == 1)
+        if (!suppress || d != 0 || started || i == 1)
         {
             tmp[n++] = (char)('0' + d);
             started = 1;
@@ -736,25 +738,30 @@ static _kernel_oserror *expand_format(const territory_data *t, const ord *o,
         if (c == 0)   return Err_CDATBadField;     /* trailing % */
 
         c = up(c);
-        if (c == 'Z')                       /* %Zxx variant (suppress-leading) */
-            c = up((unsigned char)*fmt++);
-        if (c == 0) return Err_CDATBadField;
-
         {
-            int c2 = up((unsigned char)*fmt++);
+            int zsup = 0;
+            int c2;
             int wrote = 0;
             const char *str = NULL;
 
+            if (c == 'Z')                   /* %Zxx variant: suppress leading zeros */
+            {
+                zsup = 1;
+                c = up((unsigned char)*fmt++);
+            }
+            if (c == 0) return Err_CDATBadField;
+            c2 = up((unsigned char)*fmt++);
+
             switch ((c << 8) | c2)
             {
-            case ('C'<<8)|'S': wrote = emit_number(p, rem-1, o->cs, 2);    break;
-            case ('S'<<8)|'E': wrote = emit_number(p, rem-1, o->sec, 2);   break;
-            case ('M'<<8)|'I': wrote = emit_number(p, rem-1, o->min, 2);   break;
-            case ('2'<<8)|'4': wrote = emit_number(p, rem-1, o->hour, 2);  break;
+            case ('C'<<8)|'S': wrote = emit_number(p, rem-1, o->cs, 2, zsup);    break;
+            case ('S'<<8)|'E': wrote = emit_number(p, rem-1, o->sec, 2, zsup);   break;
+            case ('M'<<8)|'I': wrote = emit_number(p, rem-1, o->min, 2, zsup);   break;
+            case ('2'<<8)|'4': wrote = emit_number(p, rem-1, o->hour, 2, zsup);  break;
             case ('1'<<8)|'2':
             {
                 int h = o->hour % 12; if (h == 0) h = 12;
-                wrote = emit_number(p, rem-1, h, 2);
+                wrote = emit_number(p, rem-1, h, 2, zsup);
                 break;
             }
             case ('A'<<8)|'M':
@@ -769,8 +776,8 @@ static _kernel_oserror *expand_format(const territory_data *t, const ord *o,
                 str = (cal->day_short && o->dow>=1 && o->dow<=7)
                         ? cal->day_short[o->dow-1] : NULL;
                 break;
-            case ('W'<<8)|'N': wrote = emit_number(p, rem-1, o->dow, 1);   break;
-            case ('D'<<8)|'Y': wrote = emit_number(p, rem-1, o->dom, 2);   break;
+            case ('W'<<8)|'N': wrote = emit_number(p, rem-1, o->dow, 1, zsup);   break;
+            case ('D'<<8)|'Y': wrote = emit_number(p, rem-1, o->dom, 2, zsup);   break;
             case ('S'<<8)|'T':
                 str = ord_suffix(cal, o->dom);
                 break;
@@ -782,11 +789,11 @@ static _kernel_oserror *expand_format(const territory_data *t, const ord *o,
                 str = (cal->month_short && o->month>=1 && o->month<=cal->num_months)
                         ? cal->month_short[o->month-1] : NULL;
                 break;
-            case ('M'<<8)|'N': wrote = emit_number(p, rem-1, o->month, 1); break;
-            case ('C'<<8)|'E': wrote = emit_number(p, rem-1, o->year/100, 2); break;
-            case ('Y'<<8)|'R': wrote = emit_number(p, rem-1, o->year%100, 2); break;
-            case ('W'<<8)|'K': wrote = emit_number(p, rem-1, o->woy, 2);   break;
-            case ('D'<<8)|'N': wrote = emit_number(p, rem-1, o->doy, 3);   break;
+            case ('M'<<8)|'N': wrote = emit_number(p, rem-1, o->month, 1, zsup); break;
+            case ('C'<<8)|'E': wrote = emit_number(p, rem-1, o->year/100, 2, zsup); break;
+            case ('Y'<<8)|'R': wrote = emit_number(p, rem-1, o->year%100, 2, zsup); break;
+            case ('W'<<8)|'K': wrote = emit_number(p, rem-1, o->woy, 2, zsup);   break;
+            case ('D'<<8)|'N': wrote = emit_number(p, rem-1, o->doy, 3, zsup);   break;
             case ('T'<<8)|'Z': str = (tz_name != NULL) ? tz_name : "";     break;
 
             /* ---- Japanese eras (TerritoryModule JapaneseEras) ---- */
@@ -803,7 +810,7 @@ static _kernel_oserror *expand_format(const territory_data *t, const ord *o,
             case ('J'<<8)|'Y':              /* year within era (3 cols) */
                 ERA();
                 if (era_index < 0) return Err_CDATBadField;
-                wrote = emit_number(p, rem-1, era_year, 3);
+                wrote = emit_number(p, rem-1, era_year, 3, zsup);
                 break;
 
             default:
