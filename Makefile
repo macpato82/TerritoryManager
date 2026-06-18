@@ -12,6 +12,17 @@ CMHGFILE           = TerritoryHdr
 CMHGFILE_SWIPREFIX = Territory
 CINCLUDES          = ${RINC}
 
+# Self-contained ROM build: the Territory manager initialises very early in ROM
+# (5th module), long before the SharedCLibrary module.  A normal C ROM module
+# links against the shared C library (romcstubs + RISC_OSLib:o.c_abssym) and
+# calls into it during its own init - impossible that early, and it would force
+# the C library to be ROM-linked first (reordering the ROM destabilises the
+# system).  Instead we link the *static* C library (ansilibm) straight into the
+# module, so it needs neither c_abssym at link time nor the SharedCLibrary
+# module at runtime, and the stock ROM module order is left untouched.
+# CUSTOMROM=custom swaps in the self-contained rom / rom_link rules below.
+CUSTOMROM          = custom
+
 # Manager logic objects:
 LOGIC_OBJS = module registry swi dispatch tables datetime daylight collate territories errors property
 # Of those, the ones that #include the CMHG-generated h.TerritoryHdr:
@@ -31,6 +42,21 @@ HDRS        =
 ASMHDRS     = Territory
 
 include CModule
+
+# --- self-contained ROM rules (selected by CUSTOMROM=custom above) -----------
+# rom_custom just builds the objects in the 'rom' phase (as the default would);
+# rom_link_custom does a single fixed-position link of the objects + the static
+# C library (ANSILIB = CLIB:o.ansilibm) at ${ADDRESS}.  This mirrors the proven
+# standalone (-rmf) link but at a fixed ROM base and with no romcstubs/c_abssym,
+# so nothing references the shared C library.
+rom_custom: ${ROM_OBJS_} ${DIRS}
+	@${ECHO} ${COMPONENT}: rom objects built (self-contained C library)
+
+rom_link_custom: ${ROM_OBJS_} ${DIRS} ${FORCEROMLINK}
+	${LD} ${LDFLAGS} ${LDLINKFLAGS} -o linked.${LNK_TARGET} -rmf -base ${ADDRESS} ${ROM_OBJS_} ${ANSILIB} ${LIBS} -Symbols linked.${LNK_TARGET}_sym
+	${CP} linked.${LNK_TARGET} ${LINKDIR}.${TARGET} ${CPFLAGS}
+	${CP} linked.${LNK_TARGET}_sym ${LINKDIR}.${TARGET}_sym ${CPFLAGS}
+	@${ECHO} ${COMPONENT}: rom_link complete (self-contained C library)
 
 # --- dependencies ---
 # Manager logic depends on the generated CMHG header and the contract header.
