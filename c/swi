@@ -24,8 +24,18 @@
  */
 _kernel_oserror *swi_number(int swi, _kernel_swi_regs *r, void *pw)
 {
+    /* Spec (Doc/SWIs): returns the CONFIGURED territory's number (TerritoryCMOS
+       &18).  Fall back to the current selection if CMOS holds no known
+       territory (e.g. unset). */
+    _kernel_swi_regs cr;
+    int terr = 0;
     (void)swi; (void)pw;
-    r->r[0] = registry_current();
+    cr.r[0] = 161;            /* OsByte_ReadCMOS */
+    cr.r[1] = 0x18;           /* TerritoryCMOS   */
+    if (_kernel_swi(OS_Byte, &cr, &cr) == NULL)
+        terr = cr.r[2] & 0xFF;
+    r->r[0] = (terr != 0 && registry_find(terr) != NULL) ? terr
+                                                         : registry_current();
     return NULL;
 }
 
@@ -144,9 +154,10 @@ _kernel_oserror *swi_nametonumber(int swi, _kernel_swi_regs *r, void *pw)
 
     (void)swi; (void)pw;
 
-    if (f == NULL)
-        return Err_BadTerritory;
-    r->r[0] = f->number;
+    /* Spec (Doc/SWIs): "R0 = 0 if territory unknown, else number" - an unknown
+       name is NOT an error.  Returning an error here breaks callers (e.g. the
+       Country configuration / International path) that expect R0 = 0. */
+    r->r[0] = (f != NULL) ? f->number : 0;
     return NULL;
 }
 
