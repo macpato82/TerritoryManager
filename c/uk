@@ -191,11 +191,24 @@ static const char *const uk_ordinal_suffix[4] = { "th","st","nd","rd" };
 static const territory_dst_rule uk_dst =
 { 3, 5, 1, 0, 60,  10, 5, 1, 0, 60 };
 
+/* NB: timezone names are named arrays, not inline string literals.  Inline
+   string-literal initialisers for struct-pointer fields are not relocated
+   reliably in this module (they read back empty); pointers to named static
+   objects relocate correctly.  Same pattern applied to name/formats below. */
+static const char uk_tz_gmt[] = "GMT";
+static const char uk_tz_bst[] = "BST";
+
 static const territory_timezone uk_timezones[1] =
 {
     /* GMT std = UTC+0, BST dst = UTC+60min */
-    { 0, 60, "GMT", "BST", &uk_dst }
+    { 0, 60, uk_tz_gmt, uk_tz_bst, &uk_dst }
 };
+
+/* Territory name and default date/time format strings, as named arrays. */
+static const char uk_name[]            = "UK";
+static const char uk_date_format[]     = "%dy-%m3-%ce%yr";
+static const char uk_time_format[]     = "%24:%mi:%se";
+static const char uk_datetime_format[] = "%24:%mi:%se %dy-%m3-%ce%yr";
 
 /* ----------------------------------------------------------------------
  * The territory definition.
@@ -204,7 +217,7 @@ static const territory_timezone uk_timezones[1] =
 const territory_data territory_uk =
 {
     .number          = 1,
-    .name            = "UK",
+    .name            = uk_name,
 
     .default_alphabet = 101,            /* ISOAlphabet_Latin1 */
     .alphabet_name    = "Latin1",
@@ -271,7 +284,7 @@ const territory_data territory_uk =
     .timezones       = uk_timezones,
     .num_timezones   = 1,
 
-    .date_format     = "%dy-%m3-%ce%yr",
-    .time_format     = "%24:%mi:%se",
-    .datetime_format = "%24:%mi:%se %dy-%m3-%ce%yr"
+    .date_format     = uk_date_format,
+    .time_format     = uk_time_format,
+    .datetime_format = uk_datetime_format
 };
