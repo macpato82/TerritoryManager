@@ -24,9 +24,14 @@ _kernel_oserror *mod_init(const char *cmd_tail, int podule_base, void *pw)
     e = register_builtins();
     if (e != NULL)
         return e;
-    /* Bring AutoDST/timezone state up to date and schedule the next switch. */
+    /* Initialise AutoDST state only.  We deliberately do NOT evaluate DST
+       during module init: reading the RTC / scheduling OS_CallAfter / issuing
+       Service_TimeZoneChanged before the system is fully up is unsafe at boot.
+       The first DST evaluation is driven instead by Service_RTCSynchronised
+       (handled in mod_service -> daylight_switch_check) once the clock module
+       reports the RTC is ready, and thereafter by the OS_CallAfter switchover
+       and the *Configure DST/NoDST/AutoDST/TimeZone commands. */
     daylight_init(pw);
-    (void)daylight_switch_check(pw);
     return NULL;
 }
 

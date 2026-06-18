@@ -903,7 +903,7 @@ static _kernel_oserror *do_convert(_kernel_swi_regs *r, const char *fmt)
     }
     else
     {
-        bufsize = r->r[3] & 0xFFFF;
+        bufsize = r->r[3];                 /* old API: whole R3 is the size */
     }
 
     offset = dat_offset(t, flags, r->r[5], &tzname, &err);
@@ -914,8 +914,9 @@ static _kernel_oserror *do_convert(_kernel_swi_regs *r, const char *fmt)
                         &endp, &freeb);
     if (err != NULL) return err;
 
-    r->r[0] = r->r[2];
-    r->r[1] = (int)endp;
+    r->r[0] = r->r[2];                     /* buffer pointer */
+    r->r[1] = (int)endp;                   /* terminator */
+    r->r[2] = freeb;                       /* bytes free in buffer */
     if (flags & DAT_FlagExtension)
         r->r[3] = (int)(flags & ~DAT_FlagExtension);
     else
@@ -990,7 +991,7 @@ _kernel_oserror *swi_converttexttostring(int swi, _kernel_swi_regs *r, void *pw)
     }
     else
     {
-        bufsize = r->r[3] & 0xFFFF;
+        bufsize = r->r[3];                 /* old API: whole R3 is the size */
     }
 
     /* Take the ordinals straight from the supplied block. */
@@ -1019,8 +1020,9 @@ _kernel_oserror *swi_converttexttostring(int swi, _kernel_swi_regs *r, void *pw)
     err = expand_format(t, &o, "", fmt, (char *)r->r[2], bufsize, &endp, &freeb);
     if (err != NULL) return err;
 
-    r->r[0] = r->r[2];
-    r->r[1] = (int)endp;
+    r->r[0] = r->r[2];                     /* buffer pointer */
+    r->r[1] = (int)endp;                   /* terminator */
+    r->r[2] = freeb;                       /* bytes free in buffer */
     if (flags & DAT_FlagExtension)
         r->r[3] = (int)(flags & ~DAT_FlagExtension);
     else

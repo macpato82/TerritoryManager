@@ -7,7 +7,7 @@
 # Built as a parallel component (does not disturb the asm Territory* modules).
 
 COMPONENT          = TerritoryManager
-TARGET             = TerritoryManager
+TARGET             = TerrMgr
 CMHGFILE           = TerritoryHdr
 CMHGFILE_SWIPREFIX = Territory
 CINCLUDES          = ${RINC}
@@ -25,6 +25,10 @@ TERR_OBJS  = uk usa ireland canada1 france germany italy spain portugal \
 OBJS        = ${LOGIC_OBJS} ${TERR_OBJS}
 CMHGDEPENDS = ${HDR_OBJS}
 HDRS        =
+# Export the assembler SWI-definitions header (hdr/Territory -> Hdr:Territory).
+# The system C swis.h is generated from this; without it RISC_OSLib/CLib fail to
+# compile (Territory_* SWIs undeclared).  The old asm module did this via HEADER1.
+ASMHDRS     = Territory
 
 include CModule
 

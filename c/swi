@@ -44,9 +44,16 @@ _kernel_oserror *swi_number(int swi, _kernel_swi_regs *r, void *pw)
  */
 _kernel_oserror *swi_register(int swi, _kernel_swi_regs *r, void *pw)
 {
-    const territory_data *t = (const territory_data *)r->r[1];
-    (void)swi; (void)pw;
-    return registry_register(t);
+    /* The classic Territory_Register ABI passes R1 = a list of SWI entry-point
+       addresses for a *delegating* territory module.  This consolidated rewrite
+       carries all of its territories built-in and never delegates, so it must
+       NOT treat R1 as a territory_data pointer: an old asm territory module
+       (e.g. the ROM "UK" module) registering would otherwise inject a bogus
+       entry and crash anything that walks the registry (*Territories, etc.).
+       Accept the call and ignore it - our own territories are registered
+       internally at initialisation. */
+    (void)swi; (void)r; (void)pw;
+    return NULL;
 }
 
 /* Territory_Deregister (+2)
