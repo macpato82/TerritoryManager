@@ -35,16 +35,16 @@ typedef struct territory_symbols
        initialisers for pointer fields do not relocate reliably in this module
        (they read back empty/garbage), whereas data stored inline in the struct
        needs no relocation.  See the same change across the other structs. */
-    char        decimal_point[4];
-    char        thousands_sep[4];
+    char        decimal_point[8];
+    char        thousands_sep[8];
     char        grouping[8];
-    char        int_curr_symbol[8];
-    char        currency_symbol[12];
-    char        mon_decimal_point[4];
-    char        mon_thousands_sep[4];
+    char        int_curr_symbol[12];
+    char        currency_symbol[16];
+    char        mon_decimal_point[8];
+    char        mon_thousands_sep[8];
     char        mon_grouping[8];
-    char        positive_sign[6];
-    char        negative_sign[6];
+    char        positive_sign[8];
+    char        negative_sign[8];
     int         int_frac_digits;
     int         frac_digits;
     int         p_cs_precedes;
@@ -53,7 +53,7 @@ typedef struct territory_symbols
     int         n_sep_by_space;
     int         p_sign_posn;
     int         n_sign_posn;
-    char        list_symbol[6];
+    char        list_symbol[8];
 } territory_symbols;
 
 /* Territory_ReadCalendarInformation (asm CalendarInfo: 11 fixed words) plus the
@@ -76,8 +76,8 @@ typedef struct territory_calendar
     const char *const *month_short;  /* [num_months] */
     const char *const *day_full;     /* [7], index 0 = Sunday */
     const char *const *day_short;    /* [7] */
-    char        am_string[12];
-    char        pm_string[12];
+    char        am_string[24];     /* e.g. Turkish "\xF6\xF0leden \xF6nce" */
+    char        pm_string[24];
     const char *const *ordinal_suffix; /* by day-of-month 1..31, or rule-based */
 
     const territory_era *eras;         /* calendar eras (Japan); NULL if none */
@@ -104,8 +104,8 @@ typedef struct territory_timezone
 {
     int         std_offset_min;   /* minutes east of UTC, standard time */
     int         dst_offset_min;   /* minutes east of UTC, daylight time */
-    char        std_name[12];
-    char        dst_name[12];
+    char        std_name[16];
+    char        dst_name[16];
     const territory_dst_rule *dst_rule;  /* NULL => DST never applies */
 } territory_timezone;
 
