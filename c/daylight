@@ -282,6 +282,10 @@ _kernel_oserror *daylight_switch_check(void *pw)
         }
 
         if (scheduled)
+            /* OS_CallAfter's delay is 32-bit centiseconds (~248 days max);
+               a 'next new year' delay can exceed that and wrap, firing
+               early/repeatedly.  Clamp and just re-evaluate when it fires. */
+            if (delay > 0x70000000u) delay = 0x70000000u;
             _swix(OS_CallAfter, _INR(0,2),
                   delay, daylight_switchover_entry, pw);
     }
@@ -301,8 +305,21 @@ _kernel_oserror *daylight_switch_check(void *pw)
     return NULL;
 }
 
-/* The OS_CallAfter callback (reached through the CMHG generic veneer). */
+/* The OS_CallAfter callback runs in IRQ/ticker context (IRQs disabled), so
+   it must NOT do the work here: daylight_switch_check writes CMOS (an I2C
+   EEPROM on this platform - the write needs the I2C interrupt to complete),
+   issues OS_ServiceCall and reads the RTC, none of which are safe from an
+   interrupt.  Defer to a transient callback, which the OS runs in a safe,
+   IRQ-enabled context. */
 _kernel_oserror *daylight_switchover(_kernel_swi_regs *r, void *pw)
+{
+    (void)r;
+    _swix(OS_AddCallBack, _INR(0,1), daylight_deferred_entry, pw);
+    return NULL;
+}
+
+/* Transient callback (safe, IRQ-enabled context): do the real DST switch. */
+_kernel_oserror *daylight_deferred(_kernel_swi_regs *r, void *pw)
 {
     (void)r;
     return daylight_switch_check(pw);

@@ -26,7 +26,8 @@ finalisation-code:     mod_final
 service-call-handler:  mod_service 0xDD 0x28
 
 ; Generic veneer for the OS_CallAfter callback that performs the DST switch.
-generic-veneers:       daylight_switchover_entry/daylight_switchover
+generic-veneers:       daylight_switchover_entry/daylight_switchover \
+                       daylight_deferred_entry/daylight_deferred
 
 ; --- SWIs -------------------------------------------------------------------
 ; Territory SWIs live in the system SWI range; chunk base is &43040.
