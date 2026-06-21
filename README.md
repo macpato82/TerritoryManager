@@ -145,3 +145,15 @@ the PSR Z flag (a CMHG C-veneer constraint); property tables carry Latin1 data
 with a fallback for other alphabets; a few alphabet-specific collation ligature
 rules are not yet data-driven. Behaviour should be validated against the original
 module before any production use.
+
+## Licence
+
+Licensed under the **MIT Licence** — see [`LICENSE`](LICENSE).
+
+This is a derivative work: the per-territory locale data and the SWI ABI were
+transcribed from / follow the original RISC OS Territory module, which is
+licensed under the Apache License 2.0. That upstream attribution is preserved in
+[`NOTICE`](NOTICE), with the Apache licence text retained in
+[`LICENSE-Apache`](LICENSE-Apache). The new code written for this project is
+offered under MIT; the upstream-derived portions keep their Apache 2.0
+attribution.
