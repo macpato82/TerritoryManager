@@ -1,9 +1,9 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MIT
  *
  * Territory system (C rewrite) - French territory data (number 6).
  * Transcribed from TerritoryModule/s/France, s/Entries, s/DateTime and
  * TerritoryModule/Resources/France/Territory (names/messages).
- * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ * Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
  */
 #include "territory.h"
 

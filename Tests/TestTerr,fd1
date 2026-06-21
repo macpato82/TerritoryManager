@@ -1,5 +1,5 @@
 REM >TestTerr  - smoke test for the C TerritoryManager rewrite
-REM SPDX-License-Identifier: GPL-3.0-or-later
+REM SPDX-License-Identifier: MIT
 REM Load the C module first:  *RMKill TerritoryManager : *RMLoad rm.TerritoryManager
 ON ERROR PRINT "*** BASIC error: ";REPORT$;" @ line ";ERL : END
 DIM buf% 256

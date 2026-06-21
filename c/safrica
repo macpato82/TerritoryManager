@@ -1,7 +1,7 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MIT
  *
  * Territory data: South Africa, English (territory 52, "SAfrica2").
- * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ * Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
  *
  * Transcribed from TerritoryModule/s/SAfrica (forces TerritoryNum_SAfrica2 = 52)
  * and TerritoryModule/Resources/SAfrica/Territory (which reuses UK names).

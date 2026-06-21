@@ -1,7 +1,7 @@
-; SPDX-License-Identifier: GPL-3.0-or-later
+; SPDX-License-Identifier: MIT
 ;
 ; CMHG header for the C rewrite of the RISC OS Territory Manager.
-; Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+; Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
 ;
 ; This uses the standard Acorn cmhg syntax (a single central swi-handler-code
 ; plus a names-only swi-decoding-table; errors are defined in C, not via the

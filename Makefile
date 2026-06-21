@@ -1,8 +1,8 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # Makefile for the C rewrite of the RISC OS Territory system (manager + the
 # built-in territory data, consolidated into one C module).
-# Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+# Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
 #
 # Built as a parallel component (does not disturb the asm Territory* modules).
 

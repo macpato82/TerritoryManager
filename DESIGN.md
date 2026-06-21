@@ -1,7 +1,8 @@
 # Territory system — C rewrite (design + phased plan)
 
 Rewrite of the RISC OS Territory subsystem from ObjAsm into C, preserving the
-existing module ABI **exactly**. New code → licensed **GPLv3** (our own work).
+existing module ABI **exactly**. New code → licensed **MIT** (our own work);
+upstream-derived locale data retains its Apache 2.0 attribution (see NOTICE).
 
 Built as a NEW parallel component (`TerritoryManagerC`) so the working assembler
 modules are never disturbed; we cut over only once the C version is build- and
@@ -72,11 +73,11 @@ results) for identical inputs — dates, collation orders, case tables, symbols.
 
 ## Status
 - [x] Scope + ABI captured (this file)
-- [x] **Phase 1 scaffold** — LICENSE(GPLv3), h/territory (vtable+registry API),
+- [x] **Phase 1 scaffold** — LICENSE(MIT), h/territory (vtable+registry API),
       cmhg/TerritoryHdr (full 56-SWI table), c/registry, c/swi (identity SWIs),
       c/module (*Territory/*Territories), Makefile, VersionNum. Implemented:
       Number, Register, Deregister, NumberToName, NameToNumber, Exists, Select;
-      rest → swi_unimplemented. Decisions: parallel component, GPLv3, push-all-
+      rest → swi_unimplemented. Decisions: parallel component, MIT, push-all-
       phases / build-once-at-end.
 - [x] **Phase 2** — manager-logic SWIs in C: c/tables (alphabet/case/property/
       symbols/calendar/keyboard/writedir/transform/ime), c/datetime (date/time/

@@ -1,7 +1,7 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # Messages for the C rewrite of the Territory Manager.
-# Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+# Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
 #
 # This C rewrite carries its help text, command syntax and territory names
 # inline (in the CMHG header and the c/<territory> data tables), so no runtime

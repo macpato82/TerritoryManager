@@ -1,8 +1,8 @@
-| SPDX-License-Identifier: GPL-3.0-or-later
+| SPDX-License-Identifier: MIT
 |
 | Build the stand-alone (RAM) module for testing: produces rm32.TerritoryManager
 | which can be *RMLoaded.  Copyright (C) 2026 Martin Eastwood and contributors.
-| GPLv3 (see LICENSE).
+| MIT (see LICENSE).
 |
 Dir <Obey$Dir>
 amu_machine standalone

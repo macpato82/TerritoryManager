@@ -3,8 +3,8 @@ TerritoryManager (C rewrite)
 
 Copyright (C) 2026 Martin Eastwood and contributors.
 
-This program is free software licensed under the GNU General Public License,
-version 3 or later (see the LICENSE file).
+The original code in this project is licensed under the MIT Licence (see the
+LICENSE file).
 
 ------------------------------------------------------------------------------
 Provenance / attribution (IMPORTANT)
@@ -23,9 +23,15 @@ SWI/entry interfaces follow, the original RISC OS Territory module:
     Castle Technology Ltd, and RISC OS Open Ltd.
     Licensed under the Apache License, Version 2.0.
 
-That original work remains under the Apache License 2.0.  Under Apache 2.0
-section 4, this derivative retains the above attribution.  Apache 2.0 is
-one-way compatible with GPLv3, so this combined work is distributed under
-GPLv3 while preserving the Apache attribution above.
+That original material remains under the Apache License 2.0, the text of which
+is retained in the LICENSE-Apache file.  Under Apache 2.0 section 4 this
+derivative retains the above attribution.
 
-If you intend to upstream or redistribute this, keep this NOTICE intact.
+The Apache 2.0 licence is permissive: a derivative may be distributed under a
+different, compatible licence provided the attribution and NOTICE are kept
+intact.  Accordingly, the new code written for this project is offered under
+the MIT Licence (LICENSE), while the upstream-derived locale data and ABI
+retain their Apache 2.0 attribution as recorded here and in LICENSE-Apache.
+
+If you intend to upstream or redistribute this, keep this NOTICE and the
+LICENSE-Apache file intact.

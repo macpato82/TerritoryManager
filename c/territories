@@ -1,7 +1,7 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MIT
  *
  * Territory system (C rewrite) - built-in territory registration.
- * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ * Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
  *
  * The C rewrite consolidates the old asm TerritoryManager + TerritoryModule into
  * one module: the manager logic plus the built-in territory data tables, which
