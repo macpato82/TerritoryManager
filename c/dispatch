@@ -1,7 +1,7 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MIT
  *
  * Territory system (C rewrite) - central SWI dispatcher.
- * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ * Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
  *
  * cmhg calls territory_swi(offset, regs, pw) for any Territory_* SWI; we route
  * by offset to the per-SWI handler.  Offsets match the swi-decoding-table order

@@ -1,7 +1,7 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MIT
  *
  * Territory system (C rewrite) - character property tables.
- * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ * Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
  *
  * Territory_CharacterPropertyTable returns, for a given character "property",
  * a 256-byte table with one byte per character code (nonzero => the character

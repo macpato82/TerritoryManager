@@ -1,9 +1,9 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MIT
  *
  * Territory system (C rewrite) - Italian territory data (number 4).
  * Transcribed from TerritoryModule/s/Italy, s/Entries, s/DateTime and
  * TerritoryModule/Resources/Italy/Territory (names/messages).
- * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ * Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
  */
 #include "territory.h"
 

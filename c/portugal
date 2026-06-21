@@ -1,9 +1,9 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MIT
  *
  * Territory system (C rewrite) - Portuguese territory data (number 8).
  * Transcribed from TerritoryModule/s/Portugal, s/Entries, s/DateTime and
  * TerritoryModule/Resources/Portugal/Territory (names/messages).
- * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ * Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
  */
 #include "territory.h"
 

@@ -1,8 +1,8 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MIT
  *
  * Territory system (C rewrite) - AutoDST engine, timezone configuration,
  * *Configure/*Status keywords and the Service_TimeZoneChanged broadcast.
- * Copyright (C) 2026 Martin Eastwood and contributors.  GPLv3 (see LICENSE).
+ * Copyright (C) 2026 Martin Eastwood and contributors.  MIT (see LICENSE).
  *
  * Port of the original asm TerritoryManager/s/Daylight + s/ModHead pieces that
  * drive daylight saving:
