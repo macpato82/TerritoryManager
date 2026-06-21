@@ -138,12 +138,6 @@ prerequisite, not specific to this module, but it surfaces here as
 *BASIC -quit Tests.TestTerr
 ```
 
-## Licence
-
-GPLv3 (see `LICENSE`).  This is a **derivative work** of the Apache-2.0 RISC OS
-Territory module (© Acorn / Pace / Castle / RISC OS Open) — see `NOTICE` for the
-required attribution.
-
 ## Known limitations
 
 See `DESIGN.md`. In brief: `Territory_Exists` reports presence in R1 rather than
